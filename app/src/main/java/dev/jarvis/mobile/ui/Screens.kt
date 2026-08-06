@@ -55,6 +55,8 @@ fun Root(state: UiState, app: AppState) {
                         Screen.Machines -> "Машины"
                         is Screen.Sessions -> state.machines.firstOrNull { it.id == screen.machineId }?.name ?: "Сессии"
                         is Screen.Chat -> state.sessions.firstOrNull { it.id == screen.sessionId }?.title() ?: "Чат"
+                        is Screen.Projects -> "Проекты"
+                        is Screen.Project -> screen.cwd.trimEnd('/').substringAfterLast('/')
                     }
                 )
             }, navigationIcon = {
@@ -64,9 +66,12 @@ fun Root(state: UiState, app: AppState) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             state.error?.let { Banner(it) }
+            state.notice?.let { Notice(it) }
             when (screen) {
                 Screen.Machines -> MachinesScreen(state, app)
-                is Screen.Sessions -> SessionsScreen(state, app, screen.machineId)
+                is Screen.Sessions -> MachineTabs(state, app, screen.machineId, projects = false)
+                is Screen.Projects -> MachineTabs(state, app, screen.machineId, projects = true)
+                is Screen.Project -> ProjectScreen(state, app, screen.machineId, screen.cwd)
                 is Screen.Chat -> ChatScreen(state, app, screen.sessionId)
             }
         }
@@ -82,6 +87,40 @@ private fun Banner(text: String) {
             .padding(12.dp)
     ) {
         Text(text, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun Notice(text: String) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .padding(12.dp)
+    ) {
+        Text(text, color = MaterialTheme.colorScheme.onSecondaryContainer, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/**
+ * Две вкладки внутри машины: что идёт сейчас и где работали раньше.
+ *
+ * Вкладки, а не отдельный экран: машина уже выбрана, и возвращаться к её выбору
+ * ради переключения между сессиями и проектами человеку незачем.
+ */
+@Composable
+private fun MachineTabs(state: UiState, app: AppState, machineId: String, projects: Boolean) {
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+            TextButton(onClick = { if (projects) app.showSessions(machineId) }) {
+                Text(if (projects) "Сессии" else "• Сессии")
+            }
+            TextButton(onClick = { if (!projects) app.openProjects(machineId) }) {
+                Text(if (projects) "• Проекты" else "Проекты")
+            }
+        }
+        HorizontalDivider()
+        if (projects) ProjectsScreen(state, app, machineId) else SessionsScreen(state, app, machineId)
     }
 }
 
@@ -265,6 +304,105 @@ private fun StatusDot(status: Status) {
             .size(10.dp)
             .background(color, CircleShape)
     )
+}
+
+/* ================= проекты ================= */
+
+@Composable
+private fun ProjectsScreen(state: UiState, app: AppState, machineId: String) {
+    var newPath by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(12.dp)) {
+            Text("Новый проект", fontWeight = FontWeight.Medium)
+            OutlinedTextField(
+                value = newPath,
+                onValueChange = { newPath = it },
+                placeholder = { Text("~/projects/my-app") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Каталог создастся сам. Сессия поднимется в tmux на той машине — " +
+                    "терминал не откроется, чат появится в списке.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = newPath.isNotBlank(), onClick = { app.launch(newPath, "claude") }) { Text("Claude") }
+                TextButton(enabled = newPath.isNotBlank(), onClick = { app.launch(newPath, "codex") }) { Text("Codex") }
+            }
+        }
+        HorizontalDivider()
+        if (state.projectsLoading) {
+            Text("Смотрю, где тут работали…", Modifier.padding(16.dp))
+            return@Column
+        }
+        if (state.projects.isEmpty()) {
+            Text(
+                "Пока ни одного проекта — заведи новый выше.",
+                Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            return@Column
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            items(state.projects, key = { it.dir }) { p ->
+                val cwd = p.cwd ?: p.dir
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { app.openProject(machineId, cwd) }
+                        .padding(16.dp)
+                ) {
+                    Text(cwd.trimEnd('/').substringAfterLast('/').ifEmpty { cwd }, fontWeight = FontWeight.Medium)
+                    Text(
+                        "${p.count} ${plural(p.count)} · $cwd",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+/** Чаты проекта. Заголовков у них нет — узел отдаёт оглавление, не смысл. */
+@Composable
+private fun ProjectScreen(state: UiState, app: AppState, machineId: String, cwd: String) {
+    val project = state.projects.firstOrNull { (it.cwd ?: it.dir) == cwd }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { app.launch(cwd, "claude") }) { Text("+ Claude") }
+            TextButton(onClick = { app.launch(cwd, "codex") }) { Text("+ Codex") }
+        }
+        HorizontalDivider()
+        LazyColumn(Modifier.weight(1f)) {
+            items(project?.sessions.orEmpty(), key = { it.id }) { s ->
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { app.launch(cwd, project?.agent ?: "claude", s.id) }
+                        .padding(16.dp)
+                ) {
+                    Text("сессия ${s.id.take(8)}", fontWeight = FontWeight.Medium)
+                    Text(
+                        "поднять продолжение на той машине",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+private fun plural(n: Long): String = when {
+    n % 10 == 1L && n % 100 != 11L -> "чат"
+    n % 10 in 2..4 && n % 100 !in 12..14 -> "чата"
+    else -> "чатов"
 }
 
 /* ================= чат ================= */

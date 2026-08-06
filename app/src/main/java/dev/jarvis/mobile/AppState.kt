@@ -14,7 +14,9 @@ import dev.jarvis.mobile.model.Transcript
 import dev.jarvis.mobile.model.sortedForList
 import dev.jarvis.mobile.transport.KeyStep
 import dev.jarvis.mobile.transport.MapKnownHosts
+import dev.jarvis.mobile.model.Launch
 import dev.jarvis.mobile.transport.NodeClient
+import dev.jarvis.mobile.transport.RemoteProject
 import dev.jarvis.mobile.transport.SshTunnel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +33,9 @@ sealed interface Screen {
     data object Machines : Screen
     data class Sessions(val machineId: String) : Screen
     data class Chat(val machineId: String, val sessionId: String) : Screen
+    /** Проекты машины: где на ней работали и куда можно завести новый. */
+    data class Projects(val machineId: String) : Screen
+    data class Project(val machineId: String, val cwd: String) : Screen
 }
 
 data class UiState(
@@ -41,6 +46,9 @@ data class UiState(
     val sessions: List<Session> = emptyList(),
     val chat: List<ChatItem> = emptyList(),
     val chatLoading: Boolean = false,
+    val projects: List<RemoteProject> = emptyList(),
+    val projectsLoading: Boolean = false,
+    val notice: String? = null,
 )
 
 /**
@@ -61,6 +69,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private var poller: Job? = null
     private var cursor: Long = 0
     private var registry: Map<String, Session> = emptyMap()
+    /** `$HOME` той машины — из первого же пути проекта; нужен только для `~`. */
+    private var homeHint: String? = null
 
     init {
         _state.value = _state.value.copy(machines = Machines.decode(secrets.machinesRaw).items)
@@ -212,9 +222,81 @@ class AppState(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /* ================= проекты ================= */
+
+    fun openProjects(machineId: String) {
+        _state.value = _state.value.copy(screen = Screen.Projects(machineId), projectsLoading = true, notice = null)
+        val c = client ?: return failLoad("Нет связи с узлом")
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) { runCatching { c.projects() } }
+            list.onSuccess {
+                // Первый абсолютный путь выдаёт домашний каталог той машины —
+                // отдельного запроса ради разворачивания `~` не нужно.
+                homeHint = homeHint ?: it.firstNotNullOfOrNull { p -> p.cwd }
+                    ?.split('/')?.take(3)?.joinToString("/")?.takeIf { h -> h.startsWith("/home") || h.startsWith("/Users") }
+                _state.value = _state.value.copy(projects = it, projectsLoading = false, error = null)
+            }.onFailure {
+                _state.value = _state.value.copy(projectsLoading = false, error = human(it))
+            }
+        }
+    }
+
+    /** Вернуться к списку сессий, не разрывая связь: машина та же. */
+    fun showSessions(machineId: String) {
+        _state.value = _state.value.copy(screen = Screen.Sessions(machineId), notice = null)
+    }
+
+    fun openProject(machineId: String, cwd: String) {
+        _state.value = _state.value.copy(screen = Screen.Project(machineId, cwd), notice = null)
+    }
+
+    /**
+     * Поднять сессию на той машине. Терминала там нет и открывать нечего:
+     * сессия появляется в `tmux -L jarvis` отсоединённой и дальше приезжает
+     * событиями, как любая другая.
+     */
+    fun launch(cwd: String, agent: String, sessionId: String? = null) {
+        val c = client ?: return failLoad("Нет связи с узлом")
+        val path = cwd.trim()
+        if (!path.startsWith("/") && !path.startsWith("~")) {
+            return failLoad("Путь должен начинаться с / или ~")
+        }
+        _state.value = _state.value.copy(notice = "Поднимаю…", error = null)
+        viewModelScope.launch {
+            val cmd = Launch.command(agent, sessionId)
+            val res = withContext(Dispatchers.IO) {
+                runCatching { c.launch(expand(path), cmd, Launch.projectName(path)) }
+            }
+            _state.value = res.fold(
+                onSuccess = {
+                    _state.value.copy(
+                        notice = "Поднял в tmux — сессия появится в списке",
+                        error = null,
+                    )
+                },
+                onFailure = { _state.value.copy(notice = null, error = human(it)) },
+            )
+        }
+    }
+
+    /**
+     * `~` разворачиваем сами: узел его не раскрывает, а `mkdir -p '~/x'` создал
+     * бы каталог с именем «~» в текущем месте — тихо и не там.
+     */
+    private fun expand(path: String): String {
+        val home = homeHint ?: return path
+        return if (path.startsWith("~")) home.trimEnd('/') + path.removePrefix("~") else path
+    }
+
+    private fun failLoad(message: String) {
+        _state.value = _state.value.copy(projectsLoading = false, error = message)
+    }
+
     fun back() {
         _state.value = when (_state.value.screen) {
             is Screen.Chat -> _state.value.copy(screen = Screen.Sessions(currentMachineId().orEmpty()))
+            is Screen.Project -> _state.value.copy(screen = Screen.Projects(currentMachineId().orEmpty()))
+            is Screen.Projects -> _state.value.copy(screen = Screen.Sessions(currentMachineId().orEmpty()))
             is Screen.Sessions -> { disconnect(); _state.value.copy(screen = Screen.Machines) }
             Screen.Machines -> _state.value
         }
@@ -223,6 +305,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private fun currentMachineId(): String? = when (val s = _state.value.screen) {
         is Screen.Sessions -> s.machineId
         is Screen.Chat -> s.machineId
+        is Screen.Projects -> s.machineId
+        is Screen.Project -> s.machineId
         else -> null
     }
 
