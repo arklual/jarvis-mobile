@@ -147,6 +147,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
             machines = Machines.decode(secrets.machinesRaw).items,
             prefs = readPrefs(),
         )
+        // Тумблер переживает перезапуск приложения, а служба — нет: её
+        // запускало ТОЛЬКО переключение. Человек видел включённый флаг и не
+        // получал ничего, что хуже отсутствия уведомлений — на них полагаются.
+        if (prefs.keepAlive && prefs.watchMachine != null) WatchService.start(app)
     }
 
     private fun readPrefs() = PrefsView(prefs.notifyDone, prefs.notifyWaiting, prefs.keepAlive)
@@ -162,11 +166,22 @@ class AppState(app: Application) : AndroidViewModel(app) {
     fun setPref(done: Boolean? = null, waiting: Boolean? = null, keepAlive: Boolean? = null) {
         done?.let { prefs.notifyDone = it }
         waiting?.let { prefs.notifyWaiting = it }
-        keepAlive?.let {
-            prefs.keepAlive = it
+
+        // Включённый тумблер уведомлений без фоновой связи не делает НИЧЕГО:
+        // приложение свёрнуто, корутины остановлены, узнать о завершении
+        // неоткуда. Человек при этом видит включённый флаг и ждёт уведомлений —
+        // худший исход из возможных. Поэтому связь поднимается вместе с ними;
+        // цену (постоянное уведомление системы) экран настроек проговаривает.
+        val wantAlerts = prefs.notifyDone || prefs.notifyWaiting
+        val want = keepAlive ?: (if (wantAlerts) true else prefs.keepAlive)
+        // А выключив последний тумблер уведомлений, держать связь незачем.
+        val effective = if (!wantAlerts && keepAlive == null) false else want
+
+        if (effective != prefs.keepAlive || keepAlive != null) {
+            prefs.keepAlive = effective
             prefs.watchMachine = currentMachineId() ?: _state.value.machines.firstOrNull()?.id
             val ctx = getApplication<Application>()
-            if (it && prefs.watchMachine != null) WatchService.start(ctx) else WatchService.stop(ctx)
+            if (effective && prefs.watchMachine != null) WatchService.start(ctx) else WatchService.stop(ctx)
         }
         _state.value = _state.value.copy(prefs = readPrefs())
     }

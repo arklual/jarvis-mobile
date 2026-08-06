@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -76,7 +77,16 @@ fun Root(state: UiState, app: AppState) {
             )
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        // imePadding — иначе клавиатура накрывает поле ввода, и человек не
+        // видит, что печатает. Одного adjustResize в манифесте мало: при
+        // edge-to-edge окно вставками больше не двигают, их отдают верстке,
+        // и учесть их обязана она.
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .imePadding()
+        ) {
             LinkStrip(state.link, onRetry = { app.onResume() })
             // Причину провала уже сказала полоска связи — второй раз тем же
             // текстом это уже не сообщение, а шум.

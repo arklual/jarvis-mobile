@@ -91,7 +91,10 @@ class WatchService : Service() {
         } ?: run { stopSelf(); return }
 
         var registry: Map<String, Session> = emptyMap()
-        var cursor = 0L
+        // -1 значит «ещё не знаем, где лента»: на первом подключении спросим
+        // это у узла. Начать с нуля — значит прочитать весь его буфер и
+        // разослать уведомления о работе, которая закончилась вчера.
+        var cursor = -1L
         var attempt = 0
         while (scope.isActive) {
             val client = try {
@@ -103,6 +106,10 @@ class WatchService : Service() {
                 continue
             }
             attempt = 0
+            if (cursor < 0) {
+                // Следим за тем, что произойдёт ДАЛЬШЕ, а не за историей.
+                cursor = runCatching { client.hello().cursor }.getOrDefault(0)
+            }
             try {
                 while (scope.isActive) {
                     val page = client.events(cursor)
