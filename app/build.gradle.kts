@@ -31,12 +31,17 @@ android {
 
     packaging {
         resources {
-            // sshj тянет bouncycastle: у них совпадают служебные файлы в META-INF
+            // Jar-ы BouncyCastle подписаны, и их подписи в APK не нужны — более
+            // того, они его ломают: упаковщик видит чужие META-INF/*.SF и
+            // спотыкается. Саму библиотеку это не касается, проверка подписи
+            // jar-а нужна была её дистрибутиву, а не нашему приложению.
             excludes += setOf(
                 "META-INF/DEPENDENCIES",
                 "META-INF/LICENSE*",
                 "META-INF/NOTICE*",
-                "META-INF/BC*.SF",
+                "META-INF/*.SF",
+                "META-INF/*.DSA",
+                "META-INF/*.RSA",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
             )
         }
@@ -56,6 +61,8 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.sshj)
+    implementation(libs.bouncycastle.prov)
+    implementation(libs.bouncycastle.pkix)
     implementation(libs.okhttp)
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.datastore.preferences)

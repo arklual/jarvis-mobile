@@ -59,6 +59,9 @@ class SshTunnel(
      */
     @Throws(IOException::class)
     fun open(timeoutSeconds: Long = 20): Int {
+        // До SSHClient: он на старте перебирает алгоритмы, и подменять
+        // провайдера после уже поздно.
+        Crypto.install()
         val ssh = SSHClient()
         ssh.addHostKeyVerifier(verifier())
         ssh.connectTimeout = 15_000
