@@ -94,6 +94,14 @@ fun Root(state: UiState, app: AppState) {
             state.error?.takeIf { it != linkWhy }?.let { Banner(it) }
             state.notice?.let { Notice(it) }
             state.launched?.let { LaunchedPane(it, app); return@Column }
+            state.pane?.let { view ->
+                PaneSheet(
+                    view = view,
+                    onKey = { app.sendKey(view.sessionId, it) },
+                    onRefresh = { app.refreshPane() },
+                    onDismiss = { app.closePane() },
+                )
+            }
             when (screen) {
                 Screen.Machines -> MachinesScreen(state, app)
                 is Screen.Sessions -> MachineTabs(state, app, screen.machineId, projects = false)

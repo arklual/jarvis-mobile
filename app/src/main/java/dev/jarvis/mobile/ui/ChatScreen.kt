@@ -43,7 +43,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.jarvis.mobile.AppState
-import dev.jarvis.mobile.QuestionView
 import dev.jarvis.mobile.UiState
 import dev.jarvis.mobile.model.Artifact
 import dev.jarvis.mobile.model.ChatItem
@@ -107,9 +106,7 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
         session?.question?.let { question ->
             QuestionBar(
                 question = question,
-                view = state.question?.takeIf { it.sessionId == sessionId },
-                onAnswer = { app.answer(sessionId, it) },
-                onRefresh = { app.loadQuestion(sessionId) },
+                onOpen = { app.showPane(sessionId, "Спрашивает") },
             )
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -136,9 +133,11 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
             onDismiss = { paletteOpen = false },
             onPick = { command ->
                 paletteOpen = false
-                // Команде с аргументом нужен человек: `/model` без имени модели
-                // откроет пикер там, где мы его не увидим и не пролистаем.
-                if (command.needsArg) draft = command.cmd + " " else app.slash(sessionId, command.cmd)
+                // Аргумент выбран кнопкой — команда уходит целиком; иначе
+                // уходит как есть, а пикер, который агент нарисует в ответ,
+                // человек увидит на живом экране паны и пролистает там же.
+                val arg = command.args.singleOrNull()
+                app.slash(sessionId, if (arg != null) "${command.cmd} $arg" else command.cmd)
             },
         )
     }
@@ -274,20 +273,14 @@ private fun Bubble(role: String, text: String) {
 /* ================= вопрос и ввод ================= */
 
 /**
- * Агент встал на вопросе — единственное, ради чего стоит достать телефон.
+ * Агент встал на вопросе.
  *
- * Варианты берём с ЭКРАНА агента, а не выдумываем: раньше кнопок было всегда
- * четыре, сколько бы вариантов ни было на самом деле, — и они появлялись даже
- * там, где выбирать нечего. Экран пока не снят или пикера на нём нет — кнопок
- * не показываем вовсе: отвечать можно текстом ниже.
+ * Кнопок с цифрами здесь нет намеренно: сколько вариантов и что за ними — знает
+ * только экран агента. Раньше их было четыре всегда, и они появлялись даже
+ * там, где выбирать нечего. Открываем живой экран — там и варианты, и их текст.
  */
 @Composable
-private fun QuestionBar(
-    question: String,
-    view: QuestionView?,
-    onAnswer: (Int) -> Unit,
-    onRefresh: () -> Unit,
-) {
+private fun QuestionBar(question: String, onOpen: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = PagePad, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -298,7 +291,7 @@ private fun QuestionBar(
             Spacer(Modifier.width(8.dp))
             SectionTitle("Спрашивает")
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = onRefresh) { Text("Обновить") }
+            TextButton(onClick = onOpen) { Text("Показать экран") }
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -307,46 +300,6 @@ private fun QuestionBar(
             maxLines = 4,
             overflow = TextOverflow.Ellipsis,
         )
-        val picker = view?.picker
-        if (picker != null && !picker.empty) {
-            Spacer(Modifier.height(6.dp))
-            // Подпись рядом с цифрой: нажимать «3» вслепую — не выбор, а
-            // угадывание. Текст варианта у нас уже есть, раз мы прочли экран.
-            picker.options.forEach { option ->
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedButton(onClick = { onAnswer(option.number) }) { Text("${option.number}") }
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        option.label,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = if (option.selected) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-            }
-        } else if (view?.loading == true) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Смотрю, что на экране агента…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Готовых вариантов на экране нет — ответь текстом ниже.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }
 
@@ -440,12 +393,24 @@ private fun SlashPalette(agent: String, onDismiss: () -> Unit, onPick: (SlashCom
                     }
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        // Многоточие честно предупреждает: сразу не уйдёт,
-                        // придётся дописать аргумент.
-                        if (command.needsArg) "${command.cmd} …" else command.cmd,
+                        command.cmd,
                         style = MonoSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                // Аргументы — кнопками, а не подсказкой в тексте: набирать
+                // «sonnet» на телефоне, помня написание, это не управление.
+                if (command.needsArg) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        command.args.forEach { arg ->
+                            OutlinedButton(onClick = { onPick(command.copy(args = listOf(arg))) }) {
+                                Text(arg, style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }

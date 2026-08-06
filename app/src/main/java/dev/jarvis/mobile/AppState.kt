@@ -78,16 +78,20 @@ data class UiState(
     /** Тумблеры уведомлений — читаются экраном настроек. */
     val prefs: PrefsView = PrefsView(),
     /**
-     * Живой экран паны сессии, у которой открыт вопрос.
+     * Живой экран паны сессии — единственное честное окно в происходящее.
      *
-     * Варианты ответа есть только там: хук их не приносит, и без экрана
-     * телефону оставалось бы гадать, сколько кнопок рисовать.
+     * Один и тот же экран показывает и вопрос агента, и то, что он нарисовал в
+     * ответ на команду. Слать `/model` вслепую и гадать, открылся ли пикер, —
+     * не управление; а варианты выбора существуют только на экране, хук их не
+     * приносит.
      */
-    val question: QuestionView? = null,
+    val pane: PaneView? = null,
 )
 
-data class QuestionView(
+data class PaneView(
     val sessionId: String,
+    /** Зачем открыли: «Спрашивает» или «/model» — человеку нужен контекст. */
+    val title: String,
     val screen: String = "",
     val picker: Picker = Picker(emptyList(), false),
     val loading: Boolean = true,
@@ -366,9 +370,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
             artifacts = emptyList(),
             commands = emptyList(),
             chatLoading = true,
-            question = null,
+            pane = null,
         )
-        if (registry[sessionId]?.question != null) loadQuestion(sessionId)
+        if (registry[sessionId]?.question != null) showPane(sessionId, "Спрашивает")
         val path = registry[sessionId]?.transcript
         if (path == null) {
             _state.value = _state.value.copy(chatLoading = false)
@@ -411,40 +415,58 @@ class AppState(app: Application) : AndroidViewModel(app) {
      * пришлось бы выдумывать — и они появлялись бы даже там, где агент просто
      * закончил работу.
      */
-    fun loadQuestion(sessionId: String) {
-        val pane = registry[sessionId]?.pane ?: return
+    fun showPane(sessionId: String, title: String) {
+        val paneId = registry[sessionId]?.pane ?: return fail("Сессия не в tmux — экрана нет")
         val c = client ?: return
-        _state.value = _state.value.copy(question = QuestionView(sessionId))
+        _state.value = _state.value.copy(pane = PaneView(sessionId, title))
+        refreshPane(sessionId, paneId, c)
+    }
+
+    /** Перечитать экран открытой паны. */
+    fun refreshPane() {
+        val cur = _state.value.pane ?: return
+        val paneId = registry[cur.sessionId]?.pane ?: return
+        val c = client ?: return
+        refreshPane(cur.sessionId, paneId, c)
+    }
+
+    private fun refreshPane(sessionId: String, paneId: String, c: NodeClient) {
         viewModelScope.launch {
             val text = withContext(Dispatchers.IO) {
-                runCatching { c.screen(pane).screen }.getOrDefault("")
+                runCatching { c.screen(paneId).screen }.getOrDefault("")
             }
-            val cur = _state.value.question ?: return@launch
+            val cur = _state.value.pane ?: return@launch
             if (cur.sessionId != sessionId) return@launch // человек уже ушёл дальше
             _state.value = _state.value.copy(
-                question = cur.copy(screen = text.trimEnd(), picker = PickerReader.read(text), loading = false),
+                pane = cur.copy(screen = text.trimEnd(), picker = PickerReader.read(text), loading = false),
             )
         }
     }
 
-    fun clearQuestion() {
-        _state.value = _state.value.copy(question = null)
+    fun closePane() {
+        _state.value = _state.value.copy(pane = null)
     }
 
-    /** Ответ на вопрос цифрой: простой пикер из одного вопроса. */
-    fun answer(sessionId: String, option: Int) {
-        val pane = registry[sessionId]?.pane ?: return fail("Сессия не в tmux — ответить нельзя")
+    /**
+     * Нажать клавишу в пане и показать, что из этого вышло.
+     *
+     * Ради последнего всё и делается: агент рисует TUI, и без перечитывания
+     * экрана человек нажимает вслепую и не знает, сработало ли.
+     */
+    fun sendKey(sessionId: String, key: String) {
+        val paneId = registry[sessionId]?.pane ?: return fail("Сессия не в tmux — нажимать некуда")
         val c = client ?: return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                runCatching { c.keys(pane, listOf(KeyStep(key = option.toString()))) }
+                runCatching { c.keys(paneId, listOf(KeyStep(key = key))) }
             }.onFailure { fail(human(it)) }
-            // Пикер после нажатия перерисовывается — покажем, что получилось,
-            // вместо того чтобы оставлять человека гадать, сработало ли.
-            delay(600)
-            loadQuestion(sessionId)
+            delay(500) // дать TUI перерисоваться
+            refreshPane(sessionId, paneId, c)
         }
     }
+
+    /** Ответ на вопрос цифрой — частный случай нажатия клавиши. */
+    fun answer(sessionId: String, option: Int) = sendKey(sessionId, option.toString())
 
     /* ================= проекты ================= */
 
@@ -571,9 +593,13 @@ class AppState(app: Application) : AndroidViewModel(app) {
         val text = cmd.trim()
         if (!Slash.looksLikeCommand(text)) return fail("Команда должна начинаться с /")
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { c.control(pane, text) } }
-                .onFailure { fail(human(it)) }
-                .onSuccess { _state.value = _state.value.copy(notice = "Отправил $text") }
+            val sent = withContext(Dispatchers.IO) { runCatching { c.control(pane, text) } }
+            sent.onFailure { fail(human(it)); return@launch }
+            // Команда почти всегда что-то РИСУЕТ: пикер модели, сводку расхода,
+            // подтверждение. Отправить и не показать результат — оставить
+            // человека гадать, сработало ли; ради этого экран и открывается.
+            delay(700)
+            showPane(sessionId, text)
         }
     }
 
