@@ -123,6 +123,14 @@ data class PrefsView(
     val notifyDone: Boolean = true,
     val notifyWaiting: Boolean = true,
     val keepAlive: Boolean = false,
+    /**
+     * Приложение исключено из оптимизации батареи.
+     *
+     * Производители Android агрессивно усыпляют фон, и служба переднего плана
+     * от этого не спасает. Без исключения уведомления просто перестают
+     * приходить — молча, что человек и принимает за поломку приложения.
+     */
+    val batteryExempt: Boolean = true,
 )
 
 /**
@@ -155,6 +163,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private var registry: Map<String, Session> = emptyMap()
     /** Причина последнего обрыва — её показывает состояние «переподключаюсь». */
     private var lastWhy: String = ""
+    /** Сессия из уведомления: откроется, как только появится в реестре. */
+    private var pendingChat: String? = null
 
     /** `$HOME` той машины — из первого же пути проекта; нужен только для `~`. */
     private var homeHint: String? = null
@@ -170,7 +180,24 @@ class AppState(app: Application) : AndroidViewModel(app) {
         if (prefs.keepAlive && prefs.watchMachine != null) WatchService.start(app)
     }
 
-    private fun readPrefs() = PrefsView(prefs.notifyDone, prefs.notifyWaiting, prefs.keepAlive)
+    private fun readPrefs() = PrefsView(
+        notifyDone = prefs.notifyDone,
+        notifyWaiting = prefs.notifyWaiting,
+        keepAlive = prefs.keepAlive,
+        batteryExempt = batteryExempt(),
+    )
+
+    /** Спрашиваем систему, а не помним сами: человек мог отозвать исключение. */
+    private fun batteryExempt(): Boolean {
+        val ctx = getApplication<Application>()
+        val pm = ctx.getSystemService(android.os.PowerManager::class.java) ?: return true
+        return runCatching { pm.isIgnoringBatteryOptimizations(ctx.packageName) }.getOrDefault(true)
+    }
+
+    /** Перечитать состояние исключения — после возврата из системных настроек. */
+    fun refreshPrefs() {
+        _state.value = _state.value.copy(prefs = readPrefs())
+    }
 
     /**
      * Тумблеры уведомлений.
@@ -303,6 +330,13 @@ class AppState(app: Application) : AndroidViewModel(app) {
                 registry = Reducer.apply(registry, page.events)
                 val list = registry.values.sortedForList()
                 _state.value = _state.value.copy(sessions = list, error = null)
+                // Сессия из уведомления дождалась своего появления в реестре.
+                pendingChat?.let { sid ->
+                    if (registry.containsKey(sid)) {
+                        pendingChat = null
+                        openChat(currentMachineId().orEmpty(), sid)
+                    }
+                }
             }
             cursor = page.cursor
             if (page.events.isEmpty()) delay(POLL_FLOOR_MS)
@@ -375,6 +409,19 @@ class AppState(app: Application) : AndroidViewModel(app) {
     }
 
     /* ================= чат ================= */
+
+    /**
+     * Открыть сессию по нажатию на уведомление.
+     *
+     * Связи в этот момент может ещё не быть — приложение только что запустили.
+     * Поэтому сначала поднимаем машину, за которой следит служба, а чат
+     * откроется, когда сессия появится в реестре.
+     */
+    fun openFromNotification(sessionId: String) {
+        val machineId = prefs.watchMachine ?: _state.value.machines.firstOrNull()?.id ?: return
+        pendingChat = sessionId
+        if (!_state.value.link.online) open(machineId) else openChat(machineId, sessionId)
+    }
 
     fun openChat(machineId: String, sessionId: String) {
         _state.value = _state.value.copy(

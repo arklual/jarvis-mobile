@@ -11,6 +11,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Тумблер «уведомлять» переживает перезагрузку — служба должна тоже. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Производители Android агрессивно усыпляют фон; без исключения служба
+         умирает и уведомления просто не приходят. Спрашиваем это у человека
+         явно, а не молча надеемся. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="false"
@@ -32,6 +36,11 @@
             android:name=".service.WatchService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".service.ReplyReceiver"
+            android:enabled="true"
+            android:exported="false" />
 
         <receiver
             android:name=".service.BootReceiver"

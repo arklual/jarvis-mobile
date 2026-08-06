@@ -42,6 +42,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             val app: AppState = viewModel()
             val state by app.state.collectAsStateWithLifecycle()
+            // Нажали на уведомление — открываем СРАЗУ ту сессию. Искать её в
+            // списке после того, как тебе про неё уже сказали, — лишний шаг.
+            LaunchedEffect(Unit) {
+                intent?.getStringExtra("sessionId")?.let { app.openFromNotification(it) }
+            }
             // Телефон уходит в карман с оборванным соединением и возвращается
             // через час. Поднимаем связь на возврате, не дожидаясь очередной
             // паузы backoff, — иначе экран встречает человека надписью

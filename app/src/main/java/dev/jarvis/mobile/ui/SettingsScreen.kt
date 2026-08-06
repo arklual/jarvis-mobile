@@ -1,8 +1,13 @@
 package dev.jarvis.mobile.ui
 
+
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -121,6 +127,22 @@ fun SettingsScreen(state: UiState, app: AppState, onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
+                // Служба переднего плана от засыпания НЕ спасает: производители
+                // усыпляют фон независимо от неё, и уведомления пропадают молча.
+                // Единственное лекарство — исключение, и просить его надо явно.
+                if (prefs.keepAlive && !prefs.batteryExempt) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Телефон может усыплять приложение — тогда уведомления перестанут " +
+                            "приходить, и молча. Исключи Jarvis из оптимизации батареи.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Button(onClick = { askBatteryExemption(context); app.refreshPrefs() }) {
+                        Text("Разрешить работу в фоне")
+                    }
+                }
             }
             Spacer(Modifier.height(PagePad))
         }
@@ -142,4 +164,21 @@ private fun Toggle(title: String, hint: String, checked: Boolean, onChange: (Boo
         Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = onChange)
     }
+}
+
+/**
+ * Попросить исключение из оптимизации батареи.
+ *
+ * Прямой запрос, если система его принимает, иначе — экран со списком: на части
+ * прошивок прямой intent закрыт, и упереться в него молча хуже, чем открыть
+ * список и дать человеку найти приложение самому.
+ */
+private fun askBatteryExemption(context: Context) {
+    val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+        .setData(Uri.parse("package:" + context.packageName))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(direct) }
+        .recoverCatching { context.startActivity(fallback) }
 }

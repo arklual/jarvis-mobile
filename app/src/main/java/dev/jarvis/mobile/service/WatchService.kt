@@ -47,12 +47,21 @@ class WatchService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private var tunnel: SshTunnel? = null
+    /** Живой клиент и реестр — чтобы ответить из шторки, не поднимая второй туннель. */
+    @Volatile
+    private var live: NodeClient? = null
+    @Volatile
+    private var known: Map<String, Session> = emptyMap()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Notifier.ensureChannels(this)
         startForeground()
+        intent?.getStringExtra(EXTRA_REPLY_SESSION)?.let { sid ->
+            val text = intent.getStringExtra(EXTRA_REPLY_TEXT).orEmpty()
+            if (text.isNotBlank()) scope.launch { deliver(sid, text) }
+        }
         if (job == null) job = scope.launch { watch() }
         // START_STICKY: система вправе прибить службу под нехватку памяти, и
         // молча перестать следить — ровно то, чего человек не ждёт, включив
@@ -105,6 +114,7 @@ class WatchService : Service() {
                 delay(backoffSeconds(attempt) * 1000L)
                 continue
             }
+            live = client
             attempt = 0
             if (cursor < 0) {
                 // Следим за тем, что произойдёт ДАЛЬШЕ, а не за историей.
@@ -118,6 +128,7 @@ class WatchService : Service() {
                         val next = Reducer.apply(registry, page.events)
                         notifyChanges(prefs, registry, next)
                         registry = next
+                        known = next
                     }
                     cursor = page.cursor
                     if (page.events.isEmpty()) delay(1_000)
@@ -125,6 +136,7 @@ class WatchService : Service() {
             } catch (e: Exception) {
                 runCatching { tunnel?.close() }
                 tunnel = null
+                live = null
                 if (!isTransient(e.message.orEmpty())) { stopSelf(); return }
                 attempt++
                 delay(backoffSeconds(attempt) * 1000L)
@@ -152,6 +164,23 @@ class WatchService : Service() {
     }
 
     /**
+     * Отправить ответ, введённый в шторке.
+     *
+     * Пана берётся из того же реестра, что ведёт слежение: другого источника у
+     * службы нет, и он же гарантирует, что отвечаем в живую сессию.
+     */
+    private suspend fun deliver(sessionId: String, text: String) {
+        val pane = known[sessionId]?.pane
+        val client = live
+        val ok = if (pane == null || client == null) {
+            false
+        } else {
+            runCatching { client.reply(pane, text) }.isSuccess
+        }
+        Notifier.replied(this, sessionId, text, ok)
+    }
+
+    /**
      * Уведомляем на ПЕРЕХОДАХ, а не на состоянии.
      *
      * Иначе каждая страница событий заново сообщала бы «агент закончил» про то
@@ -165,8 +194,16 @@ class WatchService : Service() {
                 Status.DONE -> if (prefs.notifyDone) {
                     Notifier.alert(this, id, "${now.title()} — закончила", now.detail.ifBlank { "работа завершена" })
                 }
+                // Ответ предлагаем только там, где его ждут: у «закончила»
+                // поле ввода было бы приглашением написать в пустоту.
                 Status.WAITING -> if (prefs.notifyWaiting) {
-                    Notifier.alert(this, id, "${now.title()} — спрашивает", now.question ?: "ждёт ответа")
+                    Notifier.alert(
+                        this,
+                        id,
+                        "${now.title()} — спрашивает",
+                        now.question ?: "ждёт ответа",
+                        canReply = now.pane != null,
+                    )
                 }
                 else -> Unit
             }
@@ -175,6 +212,20 @@ class WatchService : Service() {
 
     companion object {
         private const val NOTE_ID = 42
+        const val EXTRA_REPLY_SESSION = "replySession"
+        const val EXTRA_REPLY_TEXT = "replyText"
+
+        /** Передать службе ответ из шторки: соединение уже держит она. */
+        fun sendReply(context: Context, sessionId: String, text: String) {
+            val i = Intent(context, WatchService::class.java)
+                .putExtra(EXTRA_REPLY_SESSION, sessionId)
+                .putExtra(EXTRA_REPLY_TEXT, text)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(i)
+            } else {
+                context.startService(i)
+            }
+        }
 
         fun start(context: Context) {
             val i = Intent(context, WatchService::class.java)
