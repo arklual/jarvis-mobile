@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- «Клевер»: та же зелёная краска, что у настольного Jarvis -->
+    <color name="ic_launcher_background">#0F5132</color>
+</resources>
