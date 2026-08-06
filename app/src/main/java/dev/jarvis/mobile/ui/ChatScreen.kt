@@ -534,7 +534,7 @@ private fun WorkersPane(workers: List<Worker>, modifier: Modifier = Modifier) {
 @Composable
 private fun WorkerMark(state: RunState) {
     when (state) {
-        RunState.RUNNING -> PulsingDot()
+        RunState.RUNNING -> PulsingDot(MaterialTheme.colorScheme.onSurface, 9.dp)
         RunState.DONE -> Box(
             Modifier
                 .size(9.dp)
