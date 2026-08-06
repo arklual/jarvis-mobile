@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Единственное разрешение: телефон ходит по SSH к своим машинам. -->
+    <!-- Телефон ходит по SSH к своим машинам. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Уведомления о завершении работы агента — то, ради чего это в кармане. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Фоновая связь: без неё уведомлений не бывает вовсе — узел стоит на
+         чужой машине и наружу не смотрит, push-канала в этой схеме нет. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="false"
@@ -19,5 +25,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".service.WatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

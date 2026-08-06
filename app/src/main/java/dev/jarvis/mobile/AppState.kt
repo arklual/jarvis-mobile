@@ -6,7 +6,10 @@ import androidx.lifecycle.viewModelScope
 import dev.jarvis.mobile.data.AuthKind
 import dev.jarvis.mobile.data.Machine
 import dev.jarvis.mobile.data.Machines
+import dev.jarvis.mobile.data.Prefs
 import dev.jarvis.mobile.data.SecretStore
+import dev.jarvis.mobile.model.Slash
+import dev.jarvis.mobile.service.WatchService
 import dev.jarvis.mobile.model.ChatItem
 import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
@@ -59,6 +62,25 @@ data class UiState(
     val notice: String? = null,
     /** Экран только что поднятой паны: пока сессии нет, это единственное окно. */
     val launched: Launched? = null,
+    /** Открытый артефакт: файл, которого касался агент. */
+    val artifact: ArtifactView? = null,
+    /** Тумблеры уведомлений — читаются экраном настроек. */
+    val prefs: PrefsView = PrefsView(),
+)
+
+/** Содержимое артефакта: грузится по запросу, поэтому со своим состоянием. */
+data class ArtifactView(
+    val path: String,
+    val text: String = "",
+    val loading: Boolean = true,
+    val error: String? = null,
+)
+
+/** Снимок настроек для экрана — Prefs сам по себе не наблюдаем. */
+data class PrefsView(
+    val notifyDone: Boolean = true,
+    val notifyWaiting: Boolean = true,
+    val keepAlive: Boolean = false,
 )
 
 /**
@@ -80,6 +102,7 @@ data class Launched(val pane: String, val cwd: String, val screen: String = "")
 class AppState(app: Application) : AndroidViewModel(app) {
 
     private val secrets = SecretStore(app)
+    private val prefs = Prefs(app)
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
 
@@ -95,7 +118,32 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private var homeHint: String? = null
 
     init {
-        _state.value = _state.value.copy(machines = Machines.decode(secrets.machinesRaw).items)
+        _state.value = _state.value.copy(
+            machines = Machines.decode(secrets.machinesRaw).items,
+            prefs = readPrefs(),
+        )
+    }
+
+    private fun readPrefs() = PrefsView(prefs.notifyDone, prefs.notifyWaiting, prefs.keepAlive)
+
+    /**
+     * Тумблеры уведомлений.
+     *
+     * `keepAlive` не просто флаг: он поднимает фоновую службу. Без неё
+     * уведомлений не бывает вовсе — Android останавливает корутины свёрнутого
+     * приложения, а push-канала в этой схеме нет: узел стоит на чужой машине и
+     * наружу не смотрит.
+     */
+    fun setPref(done: Boolean? = null, waiting: Boolean? = null, keepAlive: Boolean? = null) {
+        done?.let { prefs.notifyDone = it }
+        waiting?.let { prefs.notifyWaiting = it }
+        keepAlive?.let {
+            prefs.keepAlive = it
+            prefs.watchMachine = currentMachineId() ?: _state.value.machines.firstOrNull()?.id
+            val ctx = getApplication<Application>()
+            if (it && prefs.watchMachine != null) WatchService.start(ctx) else WatchService.stop(ctx)
+        }
+        _state.value = _state.value.copy(prefs = readPrefs())
     }
 
     /* ================= машины ================= */
@@ -426,6 +474,58 @@ class AppState(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(projectsLoading = false, error = message)
     }
 
+    /**
+     * Слэш-команда в сессию.
+     *
+     * Отдельно от `reply`: пульт агента вставляет её иначе — с подтверждением
+     * пикера, если он появится. Отправлять команду как обычный текст значит
+     * получить её эхом в диалоге и никакого действия.
+     */
+    fun slash(sessionId: String, cmd: String) {
+        val pane = registry[sessionId]?.pane ?: return fail("Сессия не в tmux — пульт недоступен")
+        val c = client ?: return
+        val text = cmd.trim()
+        if (!Slash.looksLikeCommand(text)) return fail("Команда должна начинаться с /")
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { c.control(pane, text) } }
+                .onFailure { fail(human(it)) }
+                .onSuccess { _state.value = _state.value.copy(notice = "Отправил $text") }
+        }
+    }
+
+    /** Открыть файл, которого касался агент. Отдаёт его узел — файл на той машине. */
+    fun openArtifact(path: String) {
+        val c = client ?: return
+        _state.value = _state.value.copy(artifact = ArtifactView(path = path))
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    // Хвост, а не файл целиком: телефону нужен взгляд, а не
+                    // выгрузка мегабайтов через ssh.
+                    val head = c.file(path, Long.MAX_VALUE)
+                    val size = head?.size ?: 0
+                    val from = (size - ARTIFACT_BYTES).coerceAtLeast(0)
+                    val chunk = c.file(path, from) ?: return@runCatching null
+                    if (from > 0) "…\n" + chunk.data.substringAfter('\n') else chunk.data
+                }
+            }
+            val cur = _state.value.artifact ?: return@launch
+            _state.value = _state.value.copy(
+                artifact = res.fold(
+                    onSuccess = { text ->
+                        if (text == null) cur.copy(loading = false, error = "Файла уже нет на той машине")
+                        else cur.copy(text = text, loading = false)
+                    },
+                    onFailure = { cur.copy(loading = false, error = human(it)) },
+                ),
+            )
+        }
+    }
+
+    fun closeArtifact() {
+        _state.value = _state.value.copy(artifact = null)
+    }
+
     fun back() {
         _state.value = when (_state.value.screen) {
             is Screen.Chat -> _state.value.copy(screen = Screen.Sessions(currentMachineId().orEmpty()))
@@ -485,5 +585,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
         const val TAIL_BYTES = 256L * 1024
         /** Пол опроса: узел уже держал запрос до 25 с, спешить некуда. */
         const val POLL_FLOOR_MS = 800L
+        /** Сколько хвоста артефакта тянуть: экран телефона всё равно меньше. */
+        const val ARTIFACT_BYTES = 128L * 1024
     }
 }
