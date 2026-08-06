@@ -87,6 +87,14 @@ data class RemoteProject(
 @Serializable
 data class ProjectsReply(val projects: List<RemoteProject> = emptyList())
 
+/** Ответ `/launch`: пана нужна, чтобы показать человеку живой экран. */
+@Serializable
+data class LaunchReply(val ok: Boolean = false, val session: String = "", val pane: String = "")
+
+/** Ответ `/screen`: что видно в пане прямо сейчас. */
+@Serializable
+data class ScreenReply(val pane: String = "", val screen: String = "", val error: String = "")
+
 /** Шаг плана ответа на вопрос агента: именованная клавиша либо вставка текста. */
 @Serializable
 data class KeyStep(val key: String? = null, val text: String? = null)

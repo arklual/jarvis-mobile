@@ -39,6 +39,8 @@ import dev.jarvis.mobile.Screen
 import dev.jarvis.mobile.UiState
 import dev.jarvis.mobile.data.AuthKind
 import dev.jarvis.mobile.data.Machine
+import dev.jarvis.mobile.model.ChatItem
+import dev.jarvis.mobile.model.Kind
 import dev.jarvis.mobile.model.Session
 import dev.jarvis.mobile.model.Status
 import dev.jarvis.mobile.model.title
@@ -67,6 +69,7 @@ fun Root(state: UiState, app: AppState) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             state.error?.let { Banner(it) }
             state.notice?.let { Notice(it) }
+            state.launched?.let { LaunchedPane(it, app); return@Column }
             when (screen) {
                 Screen.Machines -> MachinesScreen(state, app)
                 is Screen.Sessions -> MachineTabs(state, app, screen.machineId, projects = false)
@@ -306,6 +309,53 @@ private fun StatusDot(status: Status) {
     )
 }
 
+/**
+ * Живой экран только что поднятой паны.
+ *
+ * Ради него всё и затевалось: раньше приложение говорило «поднял», а человек
+ * не видел ни терминала, ни сессии — и не мог понять, случилось ли хоть что-то.
+ * Пока агент не прислал первый хук, это единственное окно в происходящее.
+ */
+@Composable
+private fun LaunchedPane(launched: dev.jarvis.mobile.Launched, app: AppState) {
+    Column(Modifier.fillMaxSize().padding(12.dp)) {
+        Text("Запущено в ${launched.cwd}", fontWeight = FontWeight.Medium)
+        Text(
+            "Экран сессии на той машине. Как только агент отзовётся, он появится " +
+                "в списке сессий сам.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                .padding(8.dp)
+        ) {
+            LazyColumn {
+                item {
+                    Text(
+                        launched.screen.ifBlank { "Жду первый экран…" },
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Клавиши на случай, если агент всё-таки о чём-то спросил: пану мы
+            // знаем, а значит ответить можно и отсюда.
+            TextButton(onClick = { app.pressLaunched("Enter") }) { Text("Enter") }
+            TextButton(onClick = { app.pressLaunched("1") }) { Text("1") }
+            TextButton(onClick = { app.pressLaunched("2") }) { Text("2") }
+            TextButton(onClick = { app.refreshScreen(1) }) { Text("Обновить") }
+            Button(onClick = { app.dismissLaunched() }) { Text("Готово") }
+        }
+    }
+}
+
 /* ================= проекты ================= */
 
 @Composable
@@ -414,7 +464,7 @@ private fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
     Column(Modifier.fillMaxSize()) {
         if (state.chatLoading) Text("Читаю транскрипт…", Modifier.padding(16.dp))
         LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            items(state.chat) { item -> Bubble(item.role, item.text, item.tool) }
+            items(state.chat) { item -> ChatRow(item) }
         }
         session?.question?.let { q ->
             Column(Modifier.padding(12.dp)) {
@@ -443,6 +493,50 @@ private fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
                     text = ""
                 }
             }) { Text("→") }
+        }
+    }
+}
+
+/**
+ * Строка ленты. Реплика — пузырь, вызов инструмента и субагент — узкая строка
+ * с подписью: «Bash · npm test» вместо голого «Bash». Без подписи лента
+ * выглядит так, будто агент долго молчал, хотя он всё это время работал.
+ */
+@Composable
+private fun ChatRow(item: ChatItem) {
+    if (item.kind == Kind.TEXT) {
+        Bubble(item.role, item.text, tool = false)
+        return
+    }
+    val scheme = MaterialTheme.colorScheme
+    val subagent = item.kind == Kind.SUBAGENT
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        // Форма, а не цвет: субагент — отдельная работа, а не ещё один вызов
+        Text(
+            if (subagent) "▸" else "·",
+            color = if (subagent) scheme.primary else scheme.outline,
+            fontFamily = FontFamily.Monospace,
+        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (subagent) "субагент · ${item.text}" else item.text,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = if (subagent) FontWeight.Medium else FontWeight.Normal,
+                color = if (subagent) scheme.primary else scheme.onSurfaceVariant,
+            )
+            if (item.detail.isNotBlank()) {
+                Text(
+                    item.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = scheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

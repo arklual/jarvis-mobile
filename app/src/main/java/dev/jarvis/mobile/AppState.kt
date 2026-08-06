@@ -49,7 +49,18 @@ data class UiState(
     val projects: List<RemoteProject> = emptyList(),
     val projectsLoading: Boolean = false,
     val notice: String? = null,
+    /** Экран только что поднятой паны: пока сессии нет, это единственное окно. */
+    val launched: Launched? = null,
 )
+
+/**
+ * Только что запущенная сессия.
+ *
+ * Пока агент не прислал первый хук, в списке сессий её нет — а человек уже
+ * нажал кнопку и вправе видеть, что происходит. Показываем экран паны: ровно
+ * то, что увидел бы, подключившись к ней в терминале.
+ */
+data class Launched(val pane: String, val cwd: String, val screen: String = "")
 
 /**
  * Состояние приложения и вся работа с узлом.
@@ -261,21 +272,63 @@ class AppState(app: Application) : AndroidViewModel(app) {
         if (!path.startsWith("/") && !path.startsWith("~")) {
             return failLoad("Путь должен начинаться с / или ~")
         }
-        _state.value = _state.value.copy(notice = "Поднимаю…", error = null)
+        _state.value = _state.value.copy(notice = "Поднимаю…", error = null, launched = null)
         viewModelScope.launch {
+            val full = expand(path)
             val cmd = Launch.command(agent, sessionId)
             val res = withContext(Dispatchers.IO) {
-                runCatching { c.launch(expand(path), cmd, Launch.projectName(path)) }
+                runCatching { c.launch(full, cmd, Launch.projectName(path)) }
             }
-            _state.value = res.fold(
-                onSuccess = {
-                    _state.value.copy(
-                        notice = "Поднял в tmux — сессия появится в списке",
-                        error = null,
-                    )
-                },
-                onFailure = { _state.value.copy(notice = null, error = human(it)) },
-            )
+            res.onFailure {
+                _state.value = _state.value.copy(notice = null, error = human(it))
+            }.onSuccess { reply ->
+                _state.value = _state.value.copy(
+                    notice = null,
+                    error = null,
+                    launched = Launched(pane = reply.pane, cwd = full),
+                )
+                refreshScreen()
+            }
+        }
+    }
+
+    /**
+     * Перечитать экран поднятой паны.
+     *
+     * Агент запускается несколько секунд, поэтому первый снимок почти всегда
+     * пустой — обновляем несколько раз, а дальше по кнопке. Бесконечно
+     * опрашивать не нужно: как только придёт первый хук, сессия появится в
+     * списке и смотреть на экран станет незачем.
+     */
+    fun refreshScreen(times: Int = 4) {
+        val pane = _state.value.launched?.pane ?: return
+        val c = client ?: return
+        viewModelScope.launch {
+            repeat(times.coerceAtLeast(1)) { i ->
+                if (i > 0) delay(1_500)
+                val text = withContext(Dispatchers.IO) {
+                    runCatching { c.screen(pane).screen }.getOrDefault("")
+                }
+                val cur = _state.value.launched ?: return@launch
+                if (text.isNotBlank()) {
+                    _state.value = _state.value.copy(launched = cur.copy(screen = text.trimEnd()))
+                }
+            }
+        }
+    }
+
+    /** Убрать экран запуска: человек посмотрел и вернулся к списку. */
+    fun dismissLaunched() {
+        _state.value = _state.value.copy(launched = null)
+    }
+
+    /** Нажать клавишу в поднятой пане — ответить на вопрос первого запуска. */
+    fun pressLaunched(key: String) {
+        val pane = _state.value.launched?.pane ?: return
+        val c = client ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { c.keys(pane, listOf(KeyStep(key = key))) } }
+            refreshScreen(2)
         }
     }
 

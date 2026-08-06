@@ -10,7 +10,14 @@ package dev.jarvis.mobile.model
  * чем дублирование четырёх строк.
  */
 object Launch {
-    fun command(agent: String, sessionId: String? = null, dangerous: Boolean = false): String =
+    /**
+     * `dangerous` по умолчанию включён — как и в настольном Jarvis.
+     *
+     * Агент поднимается отсоединённым на чужой машине: подтверждать оттуда
+     * каждое действие некому и нечем, а сессия, вставшая на первом же вопросе
+     * о правах, выглядит как «не запустилось».
+     */
+    fun command(agent: String, sessionId: String? = null, dangerous: Boolean = true): String =
         if (agent == "codex") {
             val flag = if (dangerous) " --dangerously-bypass-approvals-and-sandbox" else ""
             if (sessionId != null) "codex resume $sessionId$flag" else "codex$flag"

@@ -76,8 +76,27 @@ class NodeClient(private val baseUrl: String) {
     /** План клавиш в пикер вопроса. Что нажимать — решает клиент, узел играет. */
     fun keys(pane: String, plan: List<KeyStep>) = post("/keys", json.encodeToString(KeysBody.serializer(), KeysBody(pane, plan)))
 
-    fun launch(cwd: String, cmd: String, name: String) =
-        post("/launch", json.encodeToString(LaunchBody.serializer(), LaunchBody(cwd, cmd, name)))
+    /** Поднять сессию и получить пану: по ней видно, что там происходит. */
+    fun launch(cwd: String, cmd: String, name: String): LaunchReply {
+        val body = json.encodeToString(LaunchBody.serializer(), LaunchBody(cwd, cmd, name))
+        val req = Request.Builder()
+            .url("$baseUrl/launch")
+            .post(body.toRequestBody("application/json".toMediaType()))
+            .build()
+        fast.newCall(req).execute().use { res ->
+            val text = res.body?.string().orEmpty()
+            if (!res.isSuccessful) throw IOException(errorText(text, res.code))
+            return json.decodeFromString(text)
+        }
+    }
+
+    /** Видимый экран паны — то же, что увидел бы подключившийся к ней. */
+    fun screen(pane: String): ScreenReply = json.decodeFromString(get("/screen?pane=${enc(pane)}"))
+
+    /** Текст ошибки узла человеку, а не «rc=502». */
+    private fun errorText(body: String, code: Int): String = runCatching {
+        json.decodeFromString<ScreenReply>(body).error.ifBlank { "узел ответил $code" }
+    }.getOrDefault("узел ответил $code")
 
     private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
 }

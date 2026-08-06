@@ -13,18 +13,16 @@ class LaunchTest {
      */
     @Test
     fun `команды совпадают с настольными`() {
-        assertEquals("claude", Launch.command("claude"))
-        assertEquals("claude --resume abc", Launch.command("claude", "abc"))
-        assertEquals("codex", Launch.command("codex"))
-        assertEquals("codex resume abc", Launch.command("codex", "abc"))
+        // по умолчанию — «опасный режим»: агент поднимается отсоединённым,
+        // и подтверждать оттуда каждое действие некому
+        assertEquals("claude --dangerously-skip-permissions", Launch.command("claude"))
         assertEquals(
             "claude --resume abc --dangerously-skip-permissions",
-            Launch.command("claude", "abc", dangerous = true),
+            Launch.command("claude", "abc"),
         )
-        assertEquals(
-            "codex --dangerously-bypass-approvals-and-sandbox",
-            Launch.command("codex", dangerous = true),
-        )
+        assertEquals("codex --dangerously-bypass-approvals-and-sandbox", Launch.command("codex"))
+        assertEquals("claude", Launch.command("claude", dangerous = false))
+        assertEquals("codex resume abc", Launch.command("codex", "abc", dangerous = false))
     }
 
     @Test
