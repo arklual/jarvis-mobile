@@ -44,8 +44,6 @@ sealed interface Screen {
     /** Проекты машины: где на ней работали и куда можно завести новый. */
     data class Projects(val machineId: String) : Screen
     data class Project(val machineId: String, val cwd: String) : Screen
-    /** Настройки: тумблеры уведомлений и фоновой связи. */
-    data object Settings : Screen
 }
 
 data class UiState(
@@ -383,10 +381,6 @@ class AppState(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun openSettings() {
-        _state.value = _state.value.copy(screen = Screen.Settings, notice = null)
-    }
-
     /** Вернуться к списку сессий, не разрывая связь: машина та же. */
     fun showSessions(machineId: String) {
         _state.value = _state.value.copy(screen = Screen.Sessions(machineId), notice = null)
@@ -540,7 +534,6 @@ class AppState(app: Application) : AndroidViewModel(app) {
             return
         }
         _state.value = when (_state.value.screen) {
-            Screen.Settings -> _state.value.copy(screen = Screen.Machines)
             is Screen.Chat -> _state.value.copy(screen = Screen.Sessions(currentMachineId().orEmpty()))
             is Screen.Project -> _state.value.copy(screen = Screen.Projects(currentMachineId().orEmpty()))
             is Screen.Projects -> _state.value.copy(screen = Screen.Sessions(currentMachineId().orEmpty()))
