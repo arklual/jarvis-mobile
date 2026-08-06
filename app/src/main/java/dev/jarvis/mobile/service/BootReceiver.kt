@@ -16,6 +16,11 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val prefs = Prefs(context)
-        if (prefs.keepAlive && prefs.watchMachine != null) WatchService.start(context)
+        // Система вправе запретить старт службы переднего плана из загрузки.
+        // Отказ — не повод падать: связь поднимется при первом открытии
+        // приложения, это делает AppState на старте.
+        if (prefs.keepAlive && prefs.watchMachine != null) {
+            runCatching { WatchService.start(context) }
+        }
     }
 }

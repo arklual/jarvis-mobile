@@ -58,15 +58,31 @@ class WatchService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Notifier.ensureChannels(this)
         startForeground()
-        intent?.getStringExtra(EXTRA_REPLY_SESSION)?.let { sid ->
+        val reply = intent?.getStringExtra(EXTRA_REPLY_SESSION)
+        reply?.let { sid ->
             val text = intent.getStringExtra(EXTRA_REPLY_TEXT).orEmpty()
-            if (text.isNotBlank()) scope.launch { deliver(sid, text) }
+            if (text.isNotBlank()) scope.launch { deliver(sid, text); stopIfOnlyForReply() }
         }
-        if (job == null) job = scope.launch { watch() }
+        // Слежение поднимаем, только если его просили. Ответ по старой карточке
+        // при выключенном тумблере не должен молча возвращать фоновую службу:
+        // человек её выключил осознанно.
+        if (job == null && Prefs(this).keepAlive) job = scope.launch { watch() }
+        else if (job == null && reply != null) job = scope.launch { watchOnce() }
         // START_STICKY: система вправе прибить службу под нехватку памяти, и
         // молча перестать следить — ровно то, чего человек не ждёт, включив
         // тумблер.
         return START_STICKY
+    }
+
+    /**
+     * Система решила, что служба работает слишком долго.
+     *
+     * Молчать здесь нельзя: по контракту API 35 не остановившаяся служба
+     * получает ANR. Останавливаемся сами — уведомления пропадут, но приложение
+     * останется живым, а связь поднимется при следующем открытии.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -84,11 +100,42 @@ class WatchService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         } else {
             0
         }
-        ServiceCompat.startForeground(this, NOTE_ID, n, type)
+        // На API 31+ система вправе отказать в старте службы переднего плана.
+        // Необработанное исключение здесь роняет процесс целиком — а отказ
+        // означает лишь, что уведомления пока не будет.
+        runCatching { ServiceCompat.startForeground(this, NOTE_ID, n, type) }
+    }
+
+    /**
+     * Разовое подключение ради доставки ответа: слежение выключено, но ответить
+     * человек попросил. Соединение живёт ровно до конца доставки.
+     */
+    private suspend fun watchOnce() {
+        val secrets = SecretStore(this)
+        val machine = Prefs(this).watchMachine?.let { id ->
+            Machines.decode(secrets.machinesRaw).byId(id)
+        } ?: return
+        runCatching {
+            val client = connect(machine, secrets)
+            live = client
+            // Реестр нужен ради паны: без него отвечать некуда. Просим НЕДАВНЮЮ
+            // историю, а не «с текущего места»: с текущего лента пуста, и
+            // запрос просто провисел бы весь long-poll впустую.
+            val from = (client.hello().cursor - RECENT_EVENTS).coerceAtLeast(0)
+            known = Reducer.apply(emptyMap(), client.events(from).events)
+        }
+    }
+
+    /** Разовая доставка закончена — держать соединение и уведомление незачем. */
+    private fun stopIfOnlyForReply() {
+        if (!Prefs(this).keepAlive) {
+            runCatching { tunnel?.close() }
+            stopSelf()
+        }
     }
 
     /** Тот же супервизор, что и в приложении: подключился → слушай → упало → снова. */
@@ -123,7 +170,12 @@ class WatchService : Service() {
             try {
                 while (scope.isActive) {
                     val page = client.events(cursor)
-                    if (page.gap) registry = emptyMap()
+                    if (page.gap) {
+                    // Лента порвалась: старый реестр держит мёртвые паны, и
+                    // ответ ушёл бы в никуда.
+                    registry = emptyMap()
+                    known = emptyMap()
+                }
                     if (page.events.isNotEmpty()) {
                         val next = Reducer.apply(registry, page.events)
                         notifyChanges(prefs, registry, next)
@@ -137,6 +189,7 @@ class WatchService : Service() {
                 runCatching { tunnel?.close() }
                 tunnel = null
                 live = null
+                known = emptyMap()
                 if (!isTransient(e.message.orEmpty())) { stopSelf(); return }
                 attempt++
                 delay(backoffSeconds(attempt) * 1000L)
@@ -170,13 +223,26 @@ class WatchService : Service() {
      * службы нет, и он же гарантирует, что отвечаем в живую сессию.
      */
     private suspend fun deliver(sessionId: String, text: String) {
-        val pane = known[sessionId]?.pane
-        val client = live
+        // Ждём готовности, а не сдаёмся сразу. Самый вероятный путь такой:
+        // службу подняли этим же нажатием, туннель ещё поднимается, реестра
+        // ещё нет. Мгновенное «не ушло» стирало бы набранный текст ровно там,
+        // где всё на самом деле в порядке — надо лишь подождать секунды.
+        val deadline = System.currentTimeMillis() + WAIT_READY_MS
+        var pane: String? = null
+        var client: NodeClient? = null
+        while (System.currentTimeMillis() < deadline) {
+            pane = known[sessionId]?.pane
+            client = live
+            if (pane != null && client != null) break
+            delay(300)
+        }
         val ok = if (pane == null || client == null) {
             false
         } else {
             runCatching { client.reply(pane, text) }.isSuccess
         }
+        // Текст не теряем: при неудаче он остаётся в карточке, и по нажатию
+        // открывается нужный чат, где его можно отправить руками.
         Notifier.replied(this, sessionId, text, ok)
     }
 
@@ -212,6 +278,10 @@ class WatchService : Service() {
 
     companion object {
         private const val NOTE_ID = 42
+        /** Сколько ждать готовности связи, прежде чем признать ответ недоставленным. */
+        private const val WAIT_READY_MS = 12_000L
+        /** Сколько событий назад отмотать, чтобы собрать реестр живых сессий. */
+        private const val RECENT_EVENTS = 500L
         const val EXTRA_REPLY_SESSION = "replySession"
         const val EXTRA_REPLY_TEXT = "replyText"
 

@@ -369,6 +369,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
      * очередной паузы backoff.
      */
     fun onResume() {
+        // Исключение из оптимизации батареи человек мог выдать (или отозвать) в
+        // системных настройках — узнать об этом можно только спросив заново.
+        refreshPrefs()
         val id = currentMachineId() ?: return
         if (_state.value.link.online) return
         val machine = _state.value.machines.firstOrNull { it.id == id } ?: return
@@ -418,9 +421,23 @@ class AppState(app: Application) : AndroidViewModel(app) {
      * откроется, когда сессия появится в реестре.
      */
     fun openFromNotification(sessionId: String) {
-        val machineId = prefs.watchMachine ?: _state.value.machines.firstOrNull()?.id ?: return
-        pendingChat = sessionId
-        if (!_state.value.link.online) open(machineId) else openChat(machineId, sessionId)
+        val watched = prefs.watchMachine ?: _state.value.machines.firstOrNull()?.id ?: return
+        val current = currentMachineId()
+        // Уведомление пришло от машины, за которой следит служба. Если сейчас
+        // открыта ДРУГАЯ, показывать её чат под именем чужой машины нельзя:
+        // клиент и реестр принадлежат текущей, и чат вышел бы пустым.
+        if (current != null && current != watched) {
+            pendingChat = sessionId
+            open(watched)
+            return
+        }
+        if (_state.value.link.online && registry.containsKey(sessionId)) {
+            pendingChat = null // открыли сразу — отложенному открытию делать нечего
+            openChat(watched, sessionId)
+        } else {
+            pendingChat = sessionId
+            if (!_state.value.link.online) open(watched)
+        }
     }
 
     fun openChat(machineId: String, sessionId: String) {
@@ -737,6 +754,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
     }
 
     fun back() {
+        // Человек ушёл сам — отложенное открытие из уведомления отменяется.
+        // Иначе оно выстрелит через полчаса и утащит его обратно.
+        pendingChat = null
         // Открытый артефакт закрывается первым: он лежит поверх экрана, и
         // «назад» из него означает вернуться к тому же экрану, а не глубже.
         if (_state.value.artifact != null) {

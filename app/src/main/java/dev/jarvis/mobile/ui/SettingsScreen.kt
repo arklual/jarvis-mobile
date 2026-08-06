@@ -139,7 +139,9 @@ fun SettingsScreen(state: UiState, app: AppState, onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.error,
                     )
                     Spacer(Modifier.height(6.dp))
-                    Button(onClick = { askBatteryExemption(context); app.refreshPrefs() }) {
+                    // refreshPrefs здесь не зовём: startActivity асинхронен, и мы
+                    // прочитали бы старое состояние. Его перечитает onResume.
+                    Button(onClick = { askBatteryExemption(context) }) {
                         Text("Разрешить работу в фоне")
                     }
                 }

@@ -8,7 +8,10 @@
     <!-- Фоновая связь: без неё уведомлений не бывает вовсе — узел стоит на
          чужой машине и наружу не смотрит, push-канала в этой схеме нет. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- specialUse, а не dataSync: у dataSync на Android 15 суточный потолок в
+         6 часов, после которого система вызывает onTimeout и убивает службу.
+         Для постоянного соединения с собственным сервером это не подходит. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- Тумблер «уведомлять» переживает перезагрузку — служба должна тоже. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Производители Android агрессивно усыпляют фон; без исключения служба
@@ -35,7 +38,11 @@
         <service
             android:name=".service.WatchService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Постоянное SSH-соединение с машиной пользователя: узнать о завершении работы агента можно только держа связь, push-канала в этой схеме нет" />
+        </service>
 
         <receiver
             android:name=".service.ReplyReceiver"

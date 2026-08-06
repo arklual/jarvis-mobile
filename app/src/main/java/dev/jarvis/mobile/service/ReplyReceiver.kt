@@ -25,7 +25,12 @@ class ReplyReceiver : BroadcastReceiver() {
             ?.toString()
             ?.trim()
             .orEmpty()
-        if (text.isEmpty()) return
+        if (text.isEmpty()) {
+            // RemoteImput уже показал спиннер: не обновив карточку, мы оставили
+            // бы его крутиться навсегда.
+            Notifier.alert(context, sessionId, "Пустой ответ", "Ничего не отправил", canReply = true)
+            return
+        }
         WatchService.sendReply(context, sessionId, text)
     }
 

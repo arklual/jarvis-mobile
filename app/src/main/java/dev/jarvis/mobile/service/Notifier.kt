@@ -21,6 +21,9 @@ import dev.jarvis.mobile.R
  */
 object Notifier {
 
+    /** Ключ extra с сессией. Живёт здесь: его кладёт Notifier, читают двое. */
+    const val EXTRA_SESSION = "sessionId"
+
     const val CHANNEL_ALERTS = "agents"
     const val CHANNEL_SERVICE = "watch"
 
@@ -63,7 +66,7 @@ object Notifier {
             sessionId.hashCode(),
             Intent(context, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra(ReplyReceiver.EXTRA_SESSION, sessionId),
+                .putExtra(EXTRA_SESSION, sessionId),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val builder = NotificationCompat.Builder(context, CHANNEL_ALERTS)
@@ -101,13 +104,27 @@ object Notifier {
     /** Подтвердить отправку в той же карточке — иначе непонятно, ушло ли. */
     fun replied(context: Context, sessionId: String, text: String, ok: Boolean) {
         if (NotificationManagerCompat.from(context).areNotificationsEnabled().not()) return
+        val open = PendingIntent.getActivity(
+            context,
+            sessionId.hashCode(),
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_SESSION, sessionId),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val n = NotificationCompat.Builder(context, CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.ic_stat_jarvis)
             .setContentTitle(if (ok) "Отправлено" else "Не ушло")
-            .setContentText(if (ok) text else "$text — попробуй из приложения")
+            .setContentText(if (ok) text else "Текст цел — открой чат и отправь ещё раз")
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            // Подтверждение собственного действия не должно звенеть: человек
+            // только что нажал «Отправить» и в напоминании об этом не нуждается.
+            .setSilent(true)
+            .setContentIntent(open)
             .setAutoCancel(true)
-            .setTimeoutAfter(if (ok) 8_000 else 30_000)
+            // Неудачу не прячем по таймауту: это единственное место, где ещё
+            // виден набранный текст.
+            .apply { if (ok) setTimeoutAfter(8_000) }
             .build()
         runCatching { NotificationManagerCompat.from(context).notify(sessionId.hashCode(), n) }
     }
