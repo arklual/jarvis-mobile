@@ -230,14 +230,28 @@ class AppState(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(error = message)
     }
 
-    /** Человеческий текст вместо стектрейса: на телефоне читают именно его. */
+    /**
+     * Человеческий текст вместо стектрейса: на телефоне читают именно его.
+     *
+     * Отдельно разобран «connection reset». Он значит не «сеть моргнула», а
+     * почти всегда одно: туннель поднялся, но на той стороне порт узла никто
+     * не слушает — sshd отказал в канале, и sshj закрыл локальный сокет.
+     * Отличить это по тексту самому невозможно, поэтому объясняем.
+     */
     private fun human(e: Throwable): String {
         val raw = e.message.orEmpty()
+        val why = tunnel?.forwardError?.takeIf { it.isNotBlank() }
+        val notListening = "Туннель есть, но порт узла на той машине никто не слушает.\n" +
+            "Проверь там: systemctl --user show jarvis-node -p Environment — нужен " +
+            "JARVIS_NODE_TCP=127.0.0.1:<порт>, и узел должен быть свежий."
         return when {
             raw.contains("Auth fail", true) -> "Не пустило: проверь пользователя и ключ или пароль"
             raw.contains("UnknownHost", true) -> "Не нашёл такой адрес"
-            raw.contains("ECONNREFUSED", true) || raw.contains("Connection refused", true) ->
-                "Порт закрыт. На той машине узел должен быть запущен с JARVIS_NODE_TCP"
+            raw.contains("ECONNREFUSED", true) || raw.contains("Connection refused", true) -> notListening
+            raw.contains("reset", true) || raw.contains("unexpected end of stream", true) ->
+                if (why != null) "$notListening\n(ssh: $why)" else notListening
+            raw.contains("administratively prohibited", true) ->
+                "Сервер запретил проброс портов (AllowTcpForwarding no в sshd_config)"
             raw.contains("verif", true) -> "Отпечаток хоста изменился — подключение отклонено"
             raw.isBlank() -> e::class.java.simpleName
             else -> raw
