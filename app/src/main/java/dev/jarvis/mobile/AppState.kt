@@ -10,6 +10,8 @@ import dev.jarvis.mobile.data.Prefs
 import dev.jarvis.mobile.data.SecretStore
 import dev.jarvis.mobile.model.Slash
 import dev.jarvis.mobile.service.WatchService
+import dev.jarvis.mobile.model.Artifact
+import dev.jarvis.mobile.model.Artifacts
 import dev.jarvis.mobile.model.ChatItem
 import dev.jarvis.mobile.model.Picker
 import dev.jarvis.mobile.model.PickerReader
@@ -59,6 +61,13 @@ data class UiState(
     val sessions: List<Session> = emptyList(),
     val chat: List<ChatItem> = emptyList(),
     val chatLoading: Boolean = false,
+    /**
+     * Артефакты считаются по ВСЕМУ прочитанному транскрипту, а не по видимому
+     * хвосту ленты. Иначе в длинной сессии вкладка пуста: последние сто строк
+     * — это команды и текст, а файлы агент правил раньше.
+     */
+    val artifacts: List<Artifact> = emptyList(),
+    val commands: List<String> = emptyList(),
     val projects: List<RemoteProject> = emptyList(),
     val projectsLoading: Boolean = false,
     val notice: String? = null,
@@ -339,6 +348,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(
             screen = Screen.Chat(machineId, sessionId),
             chat = emptyList(),
+            artifacts = emptyList(),
+            commands = emptyList(),
             chatLoading = true,
             question = null,
         )
@@ -360,7 +371,12 @@ class AppState(app: Application) : AndroidViewModel(app) {
                     Transcript.parse(if (from > 0) text.substringAfter('\n') else text)
                 }.getOrDefault(emptyList())
             }
-            _state.value = _state.value.copy(chat = items.takeLast(120), chatLoading = false)
+            _state.value = _state.value.copy(
+                chat = items.takeLast(120),
+                artifacts = Artifacts.from(items),
+                commands = Artifacts.commands(items),
+                chatLoading = false,
+            )
         }
     }
 

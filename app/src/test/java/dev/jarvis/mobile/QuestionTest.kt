@@ -47,7 +47,8 @@ class QuestionTest {
         val reg = Reducer.apply(emptyMap(), listOf(
             event("""{"event":"notification","payload":{"session_id":"a","notification_type":"other","message":"что-то ещё"}}"""),
         ))
-        assertNull(reg["a"]!!.question, "неизвестный тип вопросом не считаем")
+        // в JUnit сообщение идёт ПЕРВЫМ аргументом
+        assertNull("неизвестный тип вопросом не считаем", reg["a"]!!.question)
     }
 
     @Test

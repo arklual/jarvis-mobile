@@ -45,7 +45,7 @@ import androidx.compose.ui.unit.dp
 import dev.jarvis.mobile.AppState
 import dev.jarvis.mobile.QuestionView
 import dev.jarvis.mobile.UiState
-import dev.jarvis.mobile.model.Artifacts
+import dev.jarvis.mobile.model.Artifact
 import dev.jarvis.mobile.model.ChatItem
 import dev.jarvis.mobile.model.Kind
 import dev.jarvis.mobile.model.Slash
@@ -90,7 +90,7 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
         if (session?.status == Status.WORKING) ThinkingStrip()
 
         if (tab == 1) {
-            ArtifactsPane(state.chat, app, Modifier.weight(1f))
+            ArtifactsPane(state.artifacts, state.commands, app, Modifier.weight(1f))
             return@Column
         }
 
@@ -255,11 +255,18 @@ private fun Bubble(role: String, text: String) {
                 )
                 .padding(horizontal = 12.dp, vertical = 9.dp)
         ) {
-            Text(
-                text,
-                color = if (mine) scheme.onPrimary else scheme.onSurface,
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            // Реплика агента — markdown: он пишет разметкой всегда, и показывать
+            // её сырой значит заставлять читать `**` и ``` глазами. Свою
+            // реплику не разбираем: человек писал текст, а не разметку.
+            if (mine) {
+                Text(
+                    text,
+                    color = scheme.onPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else {
+                MarkdownText(text, scheme.onSurface)
+            }
         }
     }
 }
@@ -450,9 +457,12 @@ private fun SlashPalette(agent: String, onDismiss: () -> Unit, onPick: (SlashCom
 
 /** Что агент трогал и что запускал — собранное из той же ленты. */
 @Composable
-private fun ArtifactsPane(chat: List<ChatItem>, app: AppState, modifier: Modifier = Modifier) {
-    val files = remember(chat) { Artifacts.from(chat) }
-    val commands = remember(chat) { Artifacts.commands(chat) }
+private fun ArtifactsPane(
+    files: List<Artifact>,
+    commands: List<String>,
+    app: AppState,
+    modifier: Modifier = Modifier,
+) {
     LazyColumn(
         modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = PagePad, vertical = 4.dp),
