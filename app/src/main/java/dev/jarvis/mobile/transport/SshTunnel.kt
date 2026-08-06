@@ -2,6 +2,7 @@ package dev.jarvis.mobile.transport
 
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.LocalPortForwarder
+import net.schmizz.sshj.connection.channel.direct.Parameters
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider
 import net.schmizz.sshj.userauth.password.PasswordUtils
@@ -75,7 +76,7 @@ class SshTunnel(
         server = socket
         localPort = socket.localPort
 
-        val params = LocalPortForwarder.Parameters("127.0.0.1", localPort, "127.0.0.1", remotePort)
+        val params = Parameters("127.0.0.1", localPort, "127.0.0.1", remotePort)
         val fwd = ssh.newLocalPortForwarder(params, socket)
         forwarder = fwd
 

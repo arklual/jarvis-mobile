@@ -69,15 +69,15 @@ class NodeClient(private val baseUrl: String) {
 
     fun projects(): List<RemoteProject> = json.decodeFromString<ProjectsReply>(get("/projects")).projects
 
-    fun reply(pane: String, text: String) = post("/reply", json.encodeToString(ReplyBody(pane, text)))
+    fun reply(pane: String, text: String) = post("/reply", json.encodeToString(ReplyBody.serializer(), ReplyBody(pane, text)))
 
-    fun control(pane: String, cmd: String) = post("/control", json.encodeToString(ControlBody(pane, cmd)))
+    fun control(pane: String, cmd: String) = post("/control", json.encodeToString(ControlBody.serializer(), ControlBody(pane, cmd)))
 
     /** План клавиш в пикер вопроса. Что нажимать — решает клиент, узел играет. */
-    fun keys(pane: String, plan: List<KeyStep>) = post("/keys", json.encodeToString(KeysBody(pane, plan)))
+    fun keys(pane: String, plan: List<KeyStep>) = post("/keys", json.encodeToString(KeysBody.serializer(), KeysBody(pane, plan)))
 
     fun launch(cwd: String, cmd: String, name: String) =
-        post("/launch", json.encodeToString(LaunchBody(cwd, cmd, name)))
+        post("/launch", json.encodeToString(LaunchBody.serializer(), LaunchBody(cwd, cmd, name)))
 
     private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
 }

@@ -37,6 +37,6 @@ data class Machines(val items: List<Machine> = emptyList()) {
             if (raw.isNullOrBlank()) Machines()
             else runCatching { json.decodeFromString<Machines>(raw) }.getOrElse { Machines() }
 
-        fun encode(m: Machines): String = json.encodeToString(m)
+        fun encode(m: Machines): String = json.encodeToString(serializer(), m)
     }
 }

@@ -16,6 +16,7 @@ import dev.jarvis.mobile.transport.KeyStep
 import dev.jarvis.mobile.transport.MapKnownHosts
 import dev.jarvis.mobile.transport.NodeClient
 import dev.jarvis.mobile.transport.SshTunnel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -130,13 +131,21 @@ class AppState(app: Application) : AndroidViewModel(app) {
         poller = viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 val c = client ?: break
-                val page = runCatching { c.events(cursor) }.getOrElse {
+                // try/catch, а не runCatching: из inline-лямбды нельзя выйти
+                // через continue, а отмена корутины не должна выглядеть как
+                // ошибка связи — её пробрасываем дальше нетронутой.
+                val page = try {
+                    c.events(cursor)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
-                        _state.value = _state.value.copy(error = human(it))
+                        _state.value = _state.value.copy(error = human(e))
                     }
                     delay(3_000)
-                    continue
+                    null
                 }
+                if (page == null) continue
                 if (page.events.isNotEmpty()) {
                     registry = Reducer.apply(registry, page.events)
                     val list = registry.values.sortedForList()
