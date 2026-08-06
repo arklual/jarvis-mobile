@@ -1,6 +1,8 @@
 package dev.jarvis.mobile.ui
 
+
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -47,9 +50,12 @@ import dev.jarvis.mobile.UiState
 import dev.jarvis.mobile.model.Artifact
 import dev.jarvis.mobile.model.ChatItem
 import dev.jarvis.mobile.model.Kind
+import dev.jarvis.mobile.model.Kind2
+import dev.jarvis.mobile.model.RunState
 import dev.jarvis.mobile.model.Slash
 import dev.jarvis.mobile.model.SlashCommand
 import dev.jarvis.mobile.model.Status
+import dev.jarvis.mobile.model.Worker
 
 /**
  * Чат сессии: разговор и артефакты.
@@ -80,8 +86,15 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
     }
 
     Column(Modifier.fillMaxSize()) {
+        // Число рядом с «Работой» — сколько сейчас живо: без него вкладку не
+        // открывают, потому что не знают, есть ли там что-то.
+        val running = state.workers.count { it.state == RunState.RUNNING }
         Segmented(
-            items = listOf("Разговор", "Артефакты"),
+            items = listOf(
+                "Разговор",
+                "Работа" + if (running > 0) " · $running" else "",
+                "Артефакты",
+            ),
             selected = tab,
             modifier = Modifier.fillMaxWidth().padding(horizontal = PagePad, vertical = 8.dp),
             onSelect = { tab = it },
@@ -89,6 +102,10 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
         if (session?.status == Status.WORKING) ThinkingStrip()
 
         if (tab == 1) {
+            WorkersPane(state.workers, Modifier.weight(1f))
+            return@Column
+        }
+        if (tab == 2) {
             ArtifactsPane(state.artifacts, state.commands, app, Modifier.weight(1f))
             return@Column
         }
@@ -415,6 +432,119 @@ private fun SlashPalette(agent: String, onDismiss: () -> Unit, onPick: (SlashCom
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
+    }
+}
+
+/* ================= параллельные работы ================= */
+
+/**
+ * Кто ещё работает: субагенты, фоновые команды, воркфлоу.
+ *
+ * В ленте всё это — одинаковые чипы «Agent» и «Bash»: не видно ни задач, ни
+ * того, кто ещё жив. Здесь у каждой работы своя строка с задачей, моделью и
+ * состоянием, а отчёт разворачивается по нажатию.
+ */
+@Composable
+private fun WorkersPane(workers: List<Worker>, modifier: Modifier = Modifier) {
+    var open by remember { mutableStateOf<String?>(null) }
+    if (workers.isEmpty()) {
+        EmptyNote("Агент работает один: ни субагентов, ни фоновых команд.")
+        return
+    }
+    LazyColumn(
+        modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = PagePad, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items(workers, key = { it.id }) { w ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { open = if (open == w.id) null else w.id }
+                    .padding(vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    WorkerMark(w.state)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            w.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        val meta = listOfNotNull(
+                            when (w.kind) {
+                                Kind2.SUBAGENT -> "субагент"
+                                Kind2.SHELL -> "фоновая команда"
+                                Kind2.WORKFLOW -> "воркфлоу"
+                            },
+                            w.subtitle.takeIf { it.isNotBlank() && w.kind != Kind2.SHELL },
+                            w.model.takeIf { it.isNotBlank() },
+                        ).joinToString(" · ")
+                        Text(
+                            meta,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        when (w.state) {
+                            RunState.RUNNING -> "идёт"
+                            RunState.DONE -> "готово"
+                            RunState.FAILED -> "упало"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (w.state == RunState.FAILED) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                // Команда — моноширинно и всегда: по ней узнают работу вернее,
+                // чем по описанию.
+                if (w.kind == Kind2.SHELL && w.subtitle.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        w.subtitle,
+                        style = MonoTiny,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = if (open == w.id) 8 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (open == w.id && w.report.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        w.report,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+    }
+}
+
+/** Состояние работы — формой: идёт (пульс), готово (кольцо), упало (квадрат). */
+@Composable
+private fun WorkerMark(state: RunState) {
+    when (state) {
+        RunState.RUNNING -> PulsingDot()
+        RunState.DONE -> Box(
+            Modifier
+                .size(9.dp)
+                .border(1.5.dp, MaterialTheme.colorScheme.onSurfaceVariant, CircleShape)
+        )
+        RunState.FAILED -> Box(
+            Modifier
+                .size(8.dp)
+                .background(MaterialTheme.colorScheme.error, RoundedCornerShape(2.dp))
+        )
     }
 }
 

@@ -11,6 +11,7 @@ import dev.jarvis.mobile.data.SecretStore
 import dev.jarvis.mobile.model.Slash
 import dev.jarvis.mobile.service.WatchService
 import dev.jarvis.mobile.model.Artifact
+import dev.jarvis.mobile.model.Activity
 import dev.jarvis.mobile.model.Artifacts
 import dev.jarvis.mobile.model.ChatItem
 import dev.jarvis.mobile.model.Picker
@@ -18,6 +19,7 @@ import dev.jarvis.mobile.model.PickerReader
 import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
 import dev.jarvis.mobile.model.Transcript
+import dev.jarvis.mobile.model.Worker
 import dev.jarvis.mobile.model.sortedForList
 import dev.jarvis.mobile.model.Limits
 import dev.jarvis.mobile.model.LimitsParser
@@ -68,6 +70,13 @@ data class UiState(
      */
     val artifacts: List<Artifact> = emptyList(),
     val commands: List<String> = emptyList(),
+    /**
+     * Параллельные работы: субагенты, фоновые команды, воркфлоу.
+     *
+     * В ленте они выглядят одинаковыми чипами «Agent» и «Bash», и понять, кто
+     * чем занят и кто ещё жив, по ней нельзя.
+     */
+    val workers: List<Worker> = emptyList(),
     val projects: List<RemoteProject> = emptyList(),
     val projectsLoading: Boolean = false,
     val notice: String? = null,
@@ -369,6 +378,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
             chat = emptyList(),
             artifacts = emptyList(),
             commands = emptyList(),
+            workers = emptyList(),
             chatLoading = true,
             pane = null,
         )
@@ -379,7 +389,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            val items = withContext(Dispatchers.IO) {
+            val raw = withContext(Dispatchers.IO) {
                 runCatching {
                     // хвост: телефону нужен разговор, а не архив
                     val head = client?.file(path, Long.MAX_VALUE)
@@ -387,13 +397,18 @@ class AppState(app: Application) : AndroidViewModel(app) {
                     val from = (size - TAIL_BYTES).coerceAtLeast(0)
                     val chunk = client?.file(path, from)
                     val text = chunk?.data.orEmpty()
-                    Transcript.parse(if (from > 0) text.substringAfter('\n') else text)
-                }.getOrDefault(emptyList())
+                    if (from > 0) text.substringAfter('\n') else text
+                }.getOrDefault("")
             }
+            // Один разбор на три списка: лента, артефакты и параллельные работы
+            // читают один и тот же текст, второй раз тянуть его незачем.
+            val items = withContext(Dispatchers.Default) { Transcript.parse(raw) }
+            val workers = withContext(Dispatchers.Default) { Activity.parse(raw) }
             _state.value = _state.value.copy(
                 chat = items.takeLast(120),
                 artifacts = Artifacts.from(items),
                 commands = Artifacts.commands(items),
+                workers = workers,
                 chatLoading = false,
             )
         }
