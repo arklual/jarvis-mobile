@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.jarvis.mobile.AppState
+import dev.jarvis.mobile.QuestionView
 import dev.jarvis.mobile.UiState
 import dev.jarvis.mobile.model.Artifacts
 import dev.jarvis.mobile.model.ChatItem
@@ -104,7 +105,12 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
         Conversation(state.chat, Modifier.weight(1f))
 
         session?.question?.let { question ->
-            QuestionBar(question) { app.answer(sessionId, it) }
+            QuestionBar(
+                question = question,
+                view = state.question?.takeIf { it.sessionId == sessionId },
+                onAnswer = { app.answer(sessionId, it) },
+                onRefresh = { app.loadQuestion(sessionId) },
+            )
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         InputBar(
@@ -260,9 +266,21 @@ private fun Bubble(role: String, text: String) {
 
 /* ================= вопрос и ввод ================= */
 
-/** Агент встал на вопросе — единственное, ради чего стоит достать телефон. */
+/**
+ * Агент встал на вопросе — единственное, ради чего стоит достать телефон.
+ *
+ * Варианты берём с ЭКРАНА агента, а не выдумываем: раньше кнопок было всегда
+ * четыре, сколько бы вариантов ни было на самом деле, — и они появлялись даже
+ * там, где выбирать нечего. Экран пока не снят или пикера на нём нет — кнопок
+ * не показываем вовсе: отвечать можно текстом ниже.
+ */
 @Composable
-private fun QuestionBar(question: String, onAnswer: (Int) -> Unit) {
+private fun QuestionBar(
+    question: String,
+    view: QuestionView?,
+    onAnswer: (Int) -> Unit,
+    onRefresh: () -> Unit,
+) {
     Column(Modifier.fillMaxWidth().padding(horizontal = PagePad, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -272,6 +290,8 @@ private fun QuestionBar(question: String, onAnswer: (Int) -> Unit) {
             )
             Spacer(Modifier.width(8.dp))
             SectionTitle("Спрашивает")
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onRefresh) { Text("Обновить") }
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -280,11 +300,45 @@ private fun QuestionBar(question: String, onAnswer: (Int) -> Unit) {
             maxLines = 4,
             overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            (1..4).forEach { option ->
-                OutlinedButton(onClick = { onAnswer(option) }) { Text("$option") }
+        val picker = view?.picker
+        if (picker != null && !picker.empty) {
+            Spacer(Modifier.height(6.dp))
+            // Подпись рядом с цифрой: нажимать «3» вслепую — не выбор, а
+            // угадывание. Текст варианта у нас уже есть, раз мы прочли экран.
+            picker.options.forEach { option ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(onClick = { onAnswer(option.number) }) { Text("${option.number}") }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        option.label,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        color = if (option.selected) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
             }
+        } else if (view?.loading == true) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Смотрю, что на экране агента…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Готовых вариантов на экране нет — ответь текстом ниже.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

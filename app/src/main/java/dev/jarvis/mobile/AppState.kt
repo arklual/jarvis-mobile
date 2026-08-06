@@ -11,6 +11,8 @@ import dev.jarvis.mobile.data.SecretStore
 import dev.jarvis.mobile.model.Slash
 import dev.jarvis.mobile.service.WatchService
 import dev.jarvis.mobile.model.ChatItem
+import dev.jarvis.mobile.model.Picker
+import dev.jarvis.mobile.model.PickerReader
 import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
 import dev.jarvis.mobile.model.Transcript
@@ -66,6 +68,20 @@ data class UiState(
     val artifact: ArtifactView? = null,
     /** Тумблеры уведомлений — читаются экраном настроек. */
     val prefs: PrefsView = PrefsView(),
+    /**
+     * Живой экран паны сессии, у которой открыт вопрос.
+     *
+     * Варианты ответа есть только там: хук их не приносит, и без экрана
+     * телефону оставалось бы гадать, сколько кнопок рисовать.
+     */
+    val question: QuestionView? = null,
+)
+
+data class QuestionView(
+    val sessionId: String,
+    val screen: String = "",
+    val picker: Picker = Picker(emptyList(), false),
+    val loading: Boolean = true,
 )
 
 /** Содержимое артефакта: грузится по запросу, поэтому со своим состоянием. */
@@ -320,7 +336,13 @@ class AppState(app: Application) : AndroidViewModel(app) {
     /* ================= чат ================= */
 
     fun openChat(machineId: String, sessionId: String) {
-        _state.value = _state.value.copy(screen = Screen.Chat(machineId, sessionId), chat = emptyList(), chatLoading = true)
+        _state.value = _state.value.copy(
+            screen = Screen.Chat(machineId, sessionId),
+            chat = emptyList(),
+            chatLoading = true,
+            question = null,
+        )
+        if (registry[sessionId]?.question != null) loadQuestion(sessionId)
         val path = registry[sessionId]?.transcript
         if (path == null) {
             _state.value = _state.value.copy(chatLoading = false)
@@ -351,6 +373,33 @@ class AppState(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Снять экран паны, чтобы увидеть настоящие варианты ответа.
+     *
+     * Дёргается, когда человек открыл чат сессии с вопросом. Без этого кнопки
+     * пришлось бы выдумывать — и они появлялись бы даже там, где агент просто
+     * закончил работу.
+     */
+    fun loadQuestion(sessionId: String) {
+        val pane = registry[sessionId]?.pane ?: return
+        val c = client ?: return
+        _state.value = _state.value.copy(question = QuestionView(sessionId))
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching { c.screen(pane).screen }.getOrDefault("")
+            }
+            val cur = _state.value.question ?: return@launch
+            if (cur.sessionId != sessionId) return@launch // человек уже ушёл дальше
+            _state.value = _state.value.copy(
+                question = cur.copy(screen = text.trimEnd(), picker = PickerReader.read(text), loading = false),
+            )
+        }
+    }
+
+    fun clearQuestion() {
+        _state.value = _state.value.copy(question = null)
+    }
+
     /** Ответ на вопрос цифрой: простой пикер из одного вопроса. */
     fun answer(sessionId: String, option: Int) {
         val pane = registry[sessionId]?.pane ?: return fail("Сессия не в tmux — ответить нельзя")
@@ -359,6 +408,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) {
                 runCatching { c.keys(pane, listOf(KeyStep(key = option.toString()))) }
             }.onFailure { fail(human(it)) }
+            // Пикер после нажатия перерисовывается — покажем, что получилось,
+            // вместо того чтобы оставлять человека гадать, сработало ли.
+            delay(600)
+            loadQuestion(sessionId)
         }
     }
 

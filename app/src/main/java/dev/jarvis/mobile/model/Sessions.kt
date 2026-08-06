@@ -47,6 +47,10 @@ object Reducer {
             }
             val prev = out[sid] ?: Session(id = sid)
             val cwd = payload.str("cwd") ?: prev.cwd
+            // Уведомление уведомлению рознь: тем же хуком приходит и вопрос, и
+            // «агент закончил, твой ход». Классифицируем один раз здесь, иначе
+            // ниже пришлось бы повторять это в трёх местах.
+            val asks = event.isQuestion(payload)
             out[sid] = prev.copy(
                 cwd = cwd,
                 project = cwd?.trimEnd('/')?.substringAfterLast('/')?.ifEmpty { null } ?: prev.project,
@@ -54,36 +58,63 @@ object Reducer {
                 pane = env.str("tmux_pane")?.takeIf { it.isNotEmpty() } ?: prev.pane,
                 transcript = payload.str("transcript_path") ?: prev.transcript,
                 updatedAt = maxOf(rec.at, prev.updatedAt),
-                status = statusFor(event, prev.status),
-                question = questionFor(event, payload, prev.question),
-                detail = detailFor(event, payload, prev.detail),
+                status = statusFor(event, asks, prev.status),
+                question = questionFor(event, asks, payload, prev.question),
+                detail = detailFor(event, asks, payload, prev.detail),
             )
         }
         return out
     }
 
-    private fun statusFor(event: String, prev: Status): Status = when (event) {
-        "prompt", "pre-tool", "post-tool", "session-start" -> Status.WORKING
+    /**
+     * Правда ли агент о чём-то спрашивает.
+     *
+     * Хук `notification` у Claude Code — не синоним вопроса: тем же событием
+     * приходит «Claude is waiting for your input», то есть «я закончил, твой
+     * ход». Показывать на него карточку с вариантами ответа неоткуда: вариантов
+     * нет, и человек видит виджет выбора там, где выбирать нечего.
+     *
+     * Судим по `notification_type`, если он есть, — это прямой ответ агента на
+     * вопрос «чего я хочу». Нет его (старые версии) — по тексту.
+     */
+    private fun String.isQuestion(payload: JsonObject): Boolean {
+        if (this == "permission") return true
+        if (this != "notification") return false
+        payload.str("notification_type")?.let { type ->
+            return type == "permission_prompt" || type == "elicitation_dialog"
+        }
+        val msg = payload.str("message").orEmpty()
+        return msg.isNotBlank() && !IDLE.containsMatchIn(msg)
+    }
+
+    /** «Ждёт твоего ввода» — это конец работы, а не вопрос. */
+    private val IDLE = Regex("waiting for your input", RegexOption.IGNORE_CASE)
+
+    private fun statusFor(event: String, asks: Boolean, prev: Status): Status = when {
+        event == "prompt" || event == "pre-tool" || event == "post-tool" || event == "session-start" ->
+            Status.WORKING
         // «спрашивает» — единственное состояние, ради которого стоит доставать
         // телефон: агент встал и ждёт человека
-        "notification", "permission" -> Status.WAITING
-        "stop" -> Status.DONE
-        "stop-failure" -> Status.DONE
+        asks -> Status.WAITING
+        // уведомление без вопроса — это «закончил, твой ход»
+        event == "notification" -> Status.DONE
+        event == "stop" || event == "stop-failure" -> Status.DONE
         else -> prev
     }
 
-    private fun questionFor(event: String, payload: JsonObject, prev: String?): String? = when (event) {
-        "notification", "permission" -> payload.str("message") ?: payload.str("prompt") ?: prev ?: "ждёт ответа"
-        // ответили — вопроса больше нет
-        "prompt", "post-tool", "stop" -> null
+    private fun questionFor(event: String, asks: Boolean, payload: JsonObject, prev: String?): String? = when {
+        asks -> payload.str("message") ?: payload.str("prompt") ?: prev ?: "ждёт ответа"
+        // ответили либо закончили — вопроса больше нет
+        event == "prompt" || event == "post-tool" || event == "stop" || event == "notification" -> null
         else -> prev
     }
 
-    private fun detailFor(event: String, payload: JsonObject, prev: String): String = when (event) {
-        "prompt" -> payload.str("prompt")?.oneLine(120) ?: "работает"
-        "pre-tool" -> payload.str("tool_name")?.let { "выполняет $it" } ?: prev
-        "stop" -> "закончила"
-        "notification", "permission" -> payload.str("message")?.oneLine(120) ?: "спрашивает"
+    private fun detailFor(event: String, asks: Boolean, payload: JsonObject, prev: String): String = when {
+        asks -> payload.str("message")?.oneLine(120) ?: "спрашивает"
+        event == "prompt" -> payload.str("prompt")?.oneLine(120) ?: "работает"
+        event == "pre-tool" -> payload.str("tool_name")?.let { "выполняет $it" } ?: prev
+        event == "stop" -> "закончила"
+        event == "notification" -> "закончила · ждёт твоего ответа"
         else -> prev
     }
 }
