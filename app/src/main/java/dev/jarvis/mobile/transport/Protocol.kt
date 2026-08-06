@@ -91,6 +91,15 @@ data class ProjectsReply(val projects: List<RemoteProject> = emptyList())
 @Serializable
 data class LaunchReply(val ok: Boolean = false, val session: String = "", val pane: String = "")
 
+/** Ответ `/usage`: текст лимитов как его отдал агент. */
+@Serializable
+data class UsageReply(
+    val text: String = "",
+    val cached: Boolean = false,
+    val ageMs: Long = 0,
+    val error: String = "",
+)
+
 /** Ответ `/screen`: что видно в пане прямо сейчас. */
 @Serializable
 data class ScreenReply(val pane: String = "", val screen: String = "", val error: String = "")

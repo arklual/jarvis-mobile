@@ -13,8 +13,15 @@ data class ChatItem(
     val role: String,
     val text: String,
     val kind: Kind = Kind.TEXT,
-    /** Подпись инструмента: чем он занят — команда, файл, шаблон. */
+    /** Подпись инструмента: чем он занят — команда, имя файла, шаблон. */
     val detail: String = "",
+    /**
+     * Полный путь файла, если инструмент работал с файлом.
+     *
+     * Отдельно от `detail`: в ленте нужно короткое имя (путь целиком не влезает
+     * и не читается), а чтобы открыть артефакт у узла — нужен путь как есть.
+     */
+    val path: String = "",
 ) {
     val tool: Boolean get() = kind != Kind.TEXT
 }
@@ -66,6 +73,7 @@ object Transcript {
         // занимает половину строки и не несёт смысла
         val name = raw.removePrefix("mcp__").substringAfterLast("__").ifBlank { raw }
         val input = block["input"] as? JsonObject
+        val filePath = input?.text("file_path").orEmpty()
         val detail = DETAIL_KEYS.firstNotNullOfOrNull { key ->
             input?.text(key)?.let { if (key == "file_path") it.trimEnd('/').substringAfterLast('/') else it }
         }.orEmpty()
@@ -77,7 +85,7 @@ object Transcript {
         } else {
             detail
         }
-        return ChatItem("assistant", name, kind, subject.oneLine(72))
+        return ChatItem("assistant", name, kind, subject.oneLine(72), filePath)
     }
 
     private val DETAIL_KEYS = listOf("command", "file_path", "pattern", "url", "description")

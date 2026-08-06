@@ -12,7 +12,12 @@ import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
 import dev.jarvis.mobile.model.Transcript
 import dev.jarvis.mobile.model.sortedForList
+import dev.jarvis.mobile.model.Limits
+import dev.jarvis.mobile.model.LimitsParser
 import dev.jarvis.mobile.transport.KeyStep
+import dev.jarvis.mobile.transport.Link
+import dev.jarvis.mobile.transport.backoffSeconds
+import dev.jarvis.mobile.transport.isTransient
 import dev.jarvis.mobile.transport.MapKnownHosts
 import dev.jarvis.mobile.model.Launch
 import dev.jarvis.mobile.transport.NodeClient
@@ -41,8 +46,11 @@ sealed interface Screen {
 data class UiState(
     val screen: Screen = Screen.Machines,
     val machines: List<Machine> = emptyList(),
+    /** Состояние связи — по нему рисуется и шапка, и всё, что зависит от узла. */
+    val link: Link = Link.Idle,
     val connecting: Boolean = false,
     val error: String? = null,
+    val limits: Limits? = null,
     val sessions: List<Session> = emptyList(),
     val chat: List<ChatItem> = emptyList(),
     val chatLoading: Boolean = false,
@@ -80,6 +88,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private var poller: Job? = null
     private var cursor: Long = 0
     private var registry: Map<String, Session> = emptyMap()
+    /** Причина последнего обрыва — её показывает состояние «переподключаюсь». */
+    private var lastWhy: String = ""
+
     /** `$HOME` той машины — из первого же пути проекта; нужен только для `~`. */
     private var homeHint: String? = null
 
@@ -111,18 +122,118 @@ class AppState(app: Application) : AndroidViewModel(app) {
     fun open(machineId: String) {
         val machine = _state.value.machines.firstOrNull { it.id == machineId } ?: return
         disconnect()
+        cursor = 0 // другая машина — другая лента
+        registry = emptyMap()
         _state.value = _state.value.copy(
-            screen = Screen.Sessions(machineId), connecting = true, error = null, sessions = emptyList(),
+            screen = Screen.Sessions(machineId),
+            sessions = emptyList(),
+            limits = null,
+            error = null,
         )
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { connect(machine) } }
-            result.onFailure { e ->
-                _state.value = _state.value.copy(connecting = false, error = human(e))
-            }.onSuccess {
-                _state.value = _state.value.copy(connecting = false, error = null)
-                startPolling()
+        supervise(machine)
+    }
+
+    /**
+     * Держать связь с машиной, пока экран её показывает.
+     *
+     * Один цикл на всё: подключение, опрос событий и переподключение. Раньше
+     * это были три разных места, и обрыв в любом из них означал «зайди заново» —
+     * на телефоне, где соединение рвётся от блокировки экрана, это худшее из
+     * возможных поведений.
+     */
+    private fun supervise(machine: Machine) {
+        poller?.cancel()
+        poller = viewModelScope.launch {
+            var attempt = 0
+            while (isActive) {
+                setLink(if (attempt == 0) Link.Connecting else Link.Retrying(attempt, lastWhy, 0))
+                val ok = withContext(Dispatchers.IO) { runCatching { connect(machine) } }
+                if (ok.isFailure) {
+                    val why = human(ok.exceptionOrNull() ?: RuntimeException())
+                    lastWhy = why
+                    if (!isTransient(ok.exceptionOrNull()?.message.orEmpty())) {
+                        setLink(Link.Failed(why))
+                        return@launch // повтор не поможет: нужен человек
+                    }
+                    attempt++
+                    val pause = backoffSeconds(attempt)
+                    setLink(Link.Retrying(attempt, why, pause))
+                    delay(pause * 1000L)
+                    continue
+                }
+                attempt = 0
+                setLink(Link.Online)
+                loadLimits(fresh = false)
+                // Опрос живёт до первой ошибки связи, дальше — снова цикл выше.
+                val why = pollUntilBroken()
+                if (why == null) return@launch // нас остановили
+                lastWhy = why
+                attempt = 1
+                setLink(Link.Retrying(1, why, 1))
+                delay(1_000)
             }
         }
+    }
+
+    /**
+     * Тянуть события, пока связь жива. Возвращает причину обрыва либо `null`,
+     * если цикл остановили снаружи.
+     */
+    private suspend fun pollUntilBroken(): String? {
+        while (true) {
+            val c = client ?: return "связь закрыта"
+            val page = try {
+                withContext(Dispatchers.IO) { c.events(cursor) }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (e: Exception) {
+                return human(e)
+            }
+            if (page.gap) {
+                // Узел честно сказал, что часть событий вытеснена. Реестр
+                // пересобираем с нуля: дырявая картина хуже пустой.
+                registry = emptyMap()
+            }
+            if (page.events.isNotEmpty()) {
+                registry = Reducer.apply(registry, page.events)
+                val list = registry.values.sortedForList()
+                _state.value = _state.value.copy(sessions = list, error = null)
+            }
+            cursor = page.cursor
+            if (page.events.isEmpty()) delay(POLL_FLOOR_MS)
+        }
+    }
+
+    private fun setLink(link: Link) {
+        _state.value = _state.value.copy(
+            link = link,
+            connecting = link.busy,
+            error = (link as? Link.Failed)?.why,
+        )
+    }
+
+    /** Лимиты аккаунта — их знает только та машина, где стоит агент. */
+    fun loadLimits(fresh: Boolean) {
+        val c = client ?: return
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching { c.usage(fresh) }.getOrNull()
+            }
+            val parsed = text?.text?.takeIf { it.isNotBlank() }?.let { LimitsParser.parse(it) }
+            if (parsed?.known == true) _state.value = _state.value.copy(limits = parsed)
+        }
+    }
+
+    /**
+     * Экран снова на глазах: телефон мог провести час в кармане с оборванным
+     * соединением. Если связь не онлайн — поднимаем немедленно, не дожидаясь
+     * очередной паузы backoff.
+     */
+    fun onResume() {
+        val id = currentMachineId() ?: return
+        if (_state.value.link.online) return
+        val machine = _state.value.machines.firstOrNull { it.id == id } ?: return
+        supervise(machine)
     }
 
     private fun connect(machine: Machine) {
@@ -142,47 +253,17 @@ class AppState(app: Application) : AndroidViewModel(app) {
         val local = t.open()
         tunnel = t
         client = NodeClient("http://127.0.0.1:$local")
-        cursor = 0
-        registry = emptyMap()
+        // Курсор и реестр НЕ сбрасываем: переподключение — обычное дело на
+        // телефоне (блокировка экрана, смена сети), и каждый раз перечитывать
+        // ленту с нуля значит терять уже показанное и жечь трафик. Узел сам
+        // скажет `gap`, если за это время что-то вытеснилось из буфера.
         client?.hello() // рукопожатие: без него первая ошибка всплыла бы в опросе
-    }
-
-    private fun startPolling() {
-        poller?.cancel()
-        poller = viewModelScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                val c = client ?: break
-                // try/catch, а не runCatching: из inline-лямбды нельзя выйти
-                // через continue, а отмена корутины не должна выглядеть как
-                // ошибка связи — её пробрасываем дальше нетронутой.
-                val page = try {
-                    c.events(cursor)
-                } catch (cancel: CancellationException) {
-                    throw cancel
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        _state.value = _state.value.copy(error = human(e))
-                    }
-                    delay(3_000)
-                    null
-                }
-                if (page == null) continue
-                if (page.events.isNotEmpty()) {
-                    registry = Reducer.apply(registry, page.events)
-                    val list = registry.values.sortedForList()
-                    withContext(Dispatchers.Main) {
-                        _state.value = _state.value.copy(sessions = list, error = null)
-                    }
-                }
-                cursor = page.cursor
-                if (page.events.isEmpty()) delay(1_000) // long-poll уже подождал
-            }
-        }
     }
 
     fun disconnect() {
         poller?.cancel()
         poller = null
+        setLink(Link.Idle)
         runCatching { tunnel?.close() }
         tunnel = null
         client = null
@@ -402,5 +483,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val TAIL_BYTES = 256L * 1024
+        /** Пол опроса: узел уже держал запрос до 25 с, спешить некуда. */
+        const val POLL_FLOOR_MS = 800L
     }
 }

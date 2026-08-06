@@ -67,6 +67,10 @@ class NodeClient(private val baseUrl: String) {
 
     fun panes(): PanesReply = json.decodeFromString(get("/panes"))
 
+    /** Лимиты аккаунта: текст `claude /usage` как есть, разбирает клиент. */
+    fun usage(fresh: Boolean = false): UsageReply =
+        json.decodeFromString(get("/usage" + if (fresh) "?fresh=1" else ""))
+
     fun projects(): List<RemoteProject> = json.decodeFromString<ProjectsReply>(get("/projects")).projects
 
     fun reply(pane: String, text: String) = post("/reply", json.encodeToString(ReplyBody.serializer(), ReplyBody(pane, text)))
