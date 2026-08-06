@@ -26,8 +26,11 @@ data class SlashCommand(
 
 object Slash {
     private val CLAUDE = listOf(
-        SlashCommand("/model", "Модель", "чем думать", args = listOf("sonnet", "opus", "haiku")),
-        SlashCommand("/effort", "Усилие", "сколько думать", args = listOf("low", "medium", "high", "max")),
+        // Списки сверены с настольной версией (backend::models / effort_levels),
+        // а не составлены по памяти: пропущенная модель означает, что до неё
+        // просто нельзя дотянуться с телефона.
+        SlashCommand("/model", "Модель", "чем думать", args = listOf("fable", "opus", "sonnet", "haiku")),
+        SlashCommand("/effort", "Усилие", "сколько думать", args = listOf("low", "medium", "high", "xhigh", "max")),
         SlashCommand("/compact", "Сжать контекст", "освободить место, сохранив суть"),
         SlashCommand("/context", "Контекст", "чем занято окно"),
         SlashCommand("/cost", "Расход", "токены и стоимость сессии"),
@@ -38,7 +41,8 @@ object Slash {
     )
 
     private val CODEX = listOf(
-        SlashCommand("/model", "Модель и усилие", "у Codex это один пикер"),
+        SlashCommand("/model", "Модель и усилие", "у Codex это один пикер",
+            args = listOf("gpt-5.5", "gpt-5-codex", "gpt-5")),
         SlashCommand("/compact", "Сжать контекст"),
         SlashCommand("/status", "Состояние"),
         SlashCommand("/clear", "Очистить", "выбросит разговор — назад не вернуть"),

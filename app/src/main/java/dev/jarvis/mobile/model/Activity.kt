@@ -30,6 +30,9 @@ data class Worker(
     val report: String = "",
 )
 
+/** Что удалось узнать из транскрипта: параллельные работы и текущая модель. */
+data class Report(val workers: List<Worker>, val model: String)
+
 object Activity {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -51,7 +54,7 @@ object Activity {
      * задолго после запуска), поэтому сшивать приходится по идентификаторам, а
      * не по соседству строк.
      */
-    fun parse(text: String): List<Worker> {
+    fun parse(text: String): Report {
         val calls = LinkedHashMap<String, Pair<String, JsonObject>>() // toolId → (имя, вход)
         val results = HashMap<String, String>()                       // toolId → текст ответа
         val finished = HashMap<String, String>()                      // taskId → статус
@@ -138,7 +141,7 @@ object Activity {
             }
         }
         // Работающие сверху: за ними и следят.
-        return out.sortedBy { if (it.state == RunState.RUNNING) 0 else 1 }
+        return Report(out.sortedBy { if (it.state == RunState.RUNNING) 0 else 1 }, model)
     }
 
     private fun state(id: String, finished: Map<String, String>, result: String): RunState = when {

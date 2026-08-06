@@ -19,6 +19,8 @@ import dev.jarvis.mobile.model.PickerReader
 import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
 import dev.jarvis.mobile.model.Transcript
+import dev.jarvis.mobile.model.Vitals
+import dev.jarvis.mobile.model.VitalsReader
 import dev.jarvis.mobile.model.Worker
 import dev.jarvis.mobile.model.sortedForList
 import dev.jarvis.mobile.model.Limits
@@ -77,6 +79,8 @@ data class UiState(
      * чем занят и кто ещё жив, по ней нельзя.
      */
     val workers: List<Worker> = emptyList(),
+    /** Чем и как агент думает: модель из транскрипта, effort с его экрана. */
+    val vitals: Vitals = Vitals(),
     val projects: List<RemoteProject> = emptyList(),
     val projectsLoading: Boolean = false,
     val notice: String? = null,
@@ -379,6 +383,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
             artifacts = emptyList(),
             commands = emptyList(),
             workers = emptyList(),
+            vitals = Vitals(),
             chatLoading = true,
             pane = null,
         )
@@ -403,14 +408,19 @@ class AppState(app: Application) : AndroidViewModel(app) {
             // Один разбор на три списка: лента, артефакты и параллельные работы
             // читают один и тот же текст, второй раз тянуть его незачем.
             val items = withContext(Dispatchers.Default) { Transcript.parse(raw) }
-            val workers = withContext(Dispatchers.Default) { Activity.parse(raw) }
+            val report = withContext(Dispatchers.Default) { Activity.parse(raw) }
             _state.value = _state.value.copy(
                 chat = items.takeLast(120),
                 artifacts = Artifacts.from(items),
                 commands = Artifacts.commands(items),
-                workers = workers,
+                workers = report.workers,
+                // Модель — из транскрипта, она там в каждой записи ассистента.
+                vitals = _state.value.vitals.copy(model = VitalsReader.friendly(report.model)),
                 chatLoading = false,
             )
+            // Effort наружу не отдаётся нигде, кроме подвала самого агента:
+            // читаем экран паны, если она есть.
+            loadVitals(sessionId)
         }
     }
 
@@ -430,6 +440,34 @@ class AppState(app: Application) : AndroidViewModel(app) {
      * пришлось бы выдумывать — и они появлялись бы даже там, где агент просто
      * закончил работу.
      */
+    /**
+     * Дочитать effort с экрана агента.
+     *
+     * Отдельным запросом, потому что взять его больше неоткуда: в хуках его
+     * нет, в транскрипте нет, а настольный Jarvis помнит лишь то, что выставил
+     * сам. Тихо: не вышло — просто не показываем, это не повод для ошибки.
+     */
+    private fun loadVitals(sessionId: String) {
+        val paneId = registry[sessionId]?.pane ?: return
+        val c = client ?: return
+        viewModelScope.launch {
+            val screen = withContext(Dispatchers.IO) {
+                runCatching { c.screen(paneId).screen }.getOrDefault("")
+            }
+            if (screen.isBlank()) return@launch
+            val fromScreen = VitalsReader.fromScreen(screen)
+            val cur = _state.value.vitals
+            _state.value = _state.value.copy(
+                vitals = Vitals(
+                    // Транскрипт про модель надёжнее подвала: там она в каждой
+                    // записи, а подвал её показывает не всегда.
+                    model = cur.model.ifBlank { VitalsReader.friendly(fromScreen.model) },
+                    effort = fromScreen.effort,
+                ),
+            )
+        }
+    }
+
     fun showPane(sessionId: String, title: String) {
         val paneId = registry[sessionId]?.pane ?: return fail("Сессия не в tmux — экрана нет")
         val c = client ?: return

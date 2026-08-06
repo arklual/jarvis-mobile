@@ -152,5 +152,14 @@ private fun screenSubtitle(state: UiState): String? = when (val screen = state.s
         state.machines.firstOrNull { it.id == id }?.let { "${it.user}@${it.host}" }
     }
     is Screen.Project -> screen.cwd
-    is Screen.Chat -> state.sessions.firstOrNull { it.id == screen.sessionId }?.let { statusWord(it.status) }
+    // В чате подзаголовок отвечает на «чем и как оно сейчас думает»: состояние,
+    // модель и усилие. Без модели и effort управление ими вслепую — выставил и
+    // не знаешь, что стоит.
+    is Screen.Chat -> state.sessions.firstOrNull { it.id == screen.sessionId }?.let { session ->
+        listOfNotNull(
+            statusWord(session.status),
+            state.vitals.model.takeIf { it.isNotBlank() },
+            state.vitals.effort.takeIf { it.isNotBlank() }?.let { "усилие $it" },
+        ).joinToString(" · ")
+    }
 }

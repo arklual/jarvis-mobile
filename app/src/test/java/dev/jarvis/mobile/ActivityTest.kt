@@ -32,7 +32,7 @@ class ActivityTest {
             result("t1", "agentId: a315eca60e487baad\nThe agent is working in the background."),
         ).joinToString("\n")
 
-        val w = Activity.parse(jsonl).single()
+        val w = Activity.parse(jsonl).workers.single()
         assertEquals(Kind2.SUBAGENT, w.kind)
         assertEquals("UI удалённых узлов", w.title)
         assertEquals("general-purpose", w.subtitle)
@@ -49,14 +49,14 @@ class ActivityTest {
             result("t1", "agentId: aXYZ"),
             note("aXYZ", "completed"),
         ).joinToString("\n")
-        assertEquals(RunState.DONE, Activity.parse(jsonl).single().state)
+        assertEquals(RunState.DONE, Activity.parse(jsonl).workers.single().state)
 
         val failed = listOf(
             use("t2", "Bash", """{"command":"cargo test","description":"тесты","run_in_background":true}"""),
             result("t2", "Command running in background with ID: bQQQ"),
             note("bQQQ", "failed"),
         ).joinToString("\n")
-        val w = Activity.parse(failed).single()
+        val w = Activity.parse(failed).workers.single()
         assertEquals(Kind2.SHELL, w.kind)
         assertEquals(RunState.FAILED, w.state)
         assertEquals("cargo test", w.subtitle)
@@ -67,14 +67,14 @@ class ActivityTest {
         // иначе список превратился бы в ту же ленту: фоновых команд единицы,
         // обычных — сотни
         val jsonl = use("t1", "Bash", """{"command":"ls","description":"список"}""")
-        assertTrue(Activity.parse(jsonl).isEmpty())
+        assertTrue(Activity.parse(jsonl).workers.isEmpty())
     }
 
     @Test
     fun `у воркфлоу показывается имя и описание, а не скрипт`() {
         val script = "export const meta = { name: 'review-changes', description: 'Проверить дифф' }\\nphase('Review')"
         val jsonl = use("t1", "Workflow", """{"script":${quote(script)}}""")
-        val w = Activity.parse(jsonl).single()
+        val w = Activity.parse(jsonl).workers.single()
         assertEquals(Kind2.WORKFLOW, w.kind)
         assertEquals("review-changes", w.title)
         assertEquals("Проверить дифф", w.subtitle)
@@ -89,6 +89,6 @@ class ActivityTest {
             use("t2", "Agent", """{"description":"ещё идёт"}"""),
             result("t2", "agentId: aLIVE"),
         ).joinToString("\n")
-        assertEquals("ещё идёт", Activity.parse(jsonl).first().title)
+        assertEquals("ещё идёт", Activity.parse(jsonl).workers.first().title)
     }
 }
