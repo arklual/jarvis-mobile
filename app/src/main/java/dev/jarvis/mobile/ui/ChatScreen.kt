@@ -35,6 +35,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -106,7 +107,7 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
                 Modifier.fillMaxWidth().padding(horizontal = PagePad),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(Modifier.weight(1f)) { ThinkingStrip() }
+                Box(Modifier.weight(1f)) { ThinkingStrip(inset = false) }
                 TextButton(onClick = { app.interrupt(sessionId) }) { Text("Прервать") }
             }
         }
@@ -128,7 +129,7 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
                     "первую строку в этой сессии."
             )
         }
-        Conversation(state.chat, Modifier.weight(1f))
+        Conversation(state.chat, state.chatFrom, Modifier.weight(1f))
 
         session?.question?.let { question ->
             QuestionBar(
@@ -172,11 +173,11 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
 
 /** «Модель думает» — строкой в шапке чата, пока сессия в работе. */
 @Composable
-private fun ThinkingStrip() {
+private fun ThinkingStrip(inset: Boolean = true) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = PagePad, vertical = 2.dp),
+            .padding(horizontal = if (inset) PagePad else 0.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         WorkingDots(MaterialTheme.colorScheme.primary)
@@ -192,18 +193,29 @@ private fun ThinkingStrip() {
 /* ================= лента ================= */
 
 @Composable
-private fun Conversation(chat: List<ChatItem>, modifier: Modifier = Modifier) {
+private fun Conversation(chat: List<ChatItem>, from: Int, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
+    // Человек листает историю — не выдёргивать его вниз на каждой новой строке.
+    val atBottom by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= listState.layoutInfo.totalItemsCount - 2
+        }
+    }
     // Разговор читают с конца: новая строка должна оказаться перед глазами сама.
-    LaunchedEffect(chat.size) {
-        if (chat.isNotEmpty()) listState.animateScrollToItem(chat.size - 1)
+    // Ключ — последняя запись, а не размер: окно ленты упирается в предел, и по
+    // размеру эффект переставал срабатывать ровно в живой сессии.
+    LaunchedEffect(chat.lastOrNull(), atBottom) {
+        if (chat.isNotEmpty() && atBottom) listState.animateScrollToItem(chat.size - 1)
     }
     LazyColumn(
         modifier.fillMaxWidth(),
         state = listState,
         contentPadding = PaddingValues(horizontal = PagePad, vertical = 6.dp),
     ) {
-        items(chat) { item -> ChatRow(item) }
+        // Сквозной номер, а не место в окне: иначе при съезде окна под пальцем
+        // меняется содержимое строки.
+        items(chat.size, key = { i -> from + i }) { i -> ChatRow(chat[i]) }
     }
 }
 

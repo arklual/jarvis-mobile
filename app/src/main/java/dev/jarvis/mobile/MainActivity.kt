@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
@@ -87,7 +88,7 @@ class MainActivity : ComponentActivity() {
             // паузы backoff, — иначе экран встречает человека надписью
             // «переподключаюсь через 30 с».
             val owner = LocalLifecycleOwner.current
-            LaunchedEffect(owner) {
+            DisposableEffect(owner) {
                 val obs = LifecycleEventObserver { _, event ->
                     when (event) {
                         Lifecycle.Event.ON_START -> app.onResume()
@@ -98,6 +99,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 owner.lifecycle.addObserver(obs)
+                onDispose { owner.lifecycle.removeObserver(obs) }
             }
             JarvisTheme { Root(state = state, app = app) }
         }
