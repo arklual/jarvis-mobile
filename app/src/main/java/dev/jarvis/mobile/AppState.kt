@@ -35,6 +35,7 @@ import dev.jarvis.mobile.transport.NodeClient
 import dev.jarvis.mobile.transport.RemoteProject
 import dev.jarvis.mobile.transport.SshTunnel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -159,6 +160,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private var tunnel: SshTunnel? = null
     private var client: NodeClient? = null
     private var poller: Job? = null
+    /** Дочитывание открытого чата: живёт ровно пока чат на экране. */
+    private var chatTail: Job? = null
     private var cursor: Long = 0
     private var registry: Map<String, Session> = emptyMap()
     /** Причина последнего обрыва — её показывает состояние «переподключаюсь». */
@@ -368,10 +371,28 @@ class AppState(app: Application) : AndroidViewModel(app) {
      * соединением. Если связь не онлайн — поднимаем немедленно, не дожидаясь
      * очередной паузы backoff.
      */
+    /**
+     * Ушли с экрана: гасим дочитывание чата.
+     *
+     * Сам поллер событий не трогаем — за уведомления отвечает служба, а список
+     * сессий должен быть свежим сразу по возвращении.
+     */
+    fun onBackground() {
+        chatTail?.cancel()
+        chatTail = null
+    }
+
     fun onResume() {
         // Исключение из оптимизации батареи человек мог выдать (или отозвать) в
         // системных настройках — узнать об этом можно только спросив заново.
         refreshPrefs()
+        // Вернулись в открытый чат — дочитывание надо поднять заново.
+        val screen = _state.value.screen
+        if (screen is Screen.Chat && chatTail == null) {
+            registry[screen.sessionId]?.transcript?.let { path ->
+                chatTail = viewModelScope.launch { tailChat(screen.sessionId, path) }
+            }
+        }
         val id = currentMachineId() ?: return
         if (_state.value.link.online) return
         val machine = _state.value.machines.firstOrNull { it.id == id } ?: return
@@ -405,6 +426,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
     fun disconnect() {
         poller?.cancel()
         poller = null
+        chatTail?.cancel()
+        chatTail = null
         setLink(Link.Idle)
         runCatching { tunnel?.close() }
         tunnel = null
@@ -441,6 +464,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
     }
 
     fun openChat(machineId: String, sessionId: String) {
+        chatTail?.cancel()
         _state.value = _state.value.copy(
             screen = Screen.Chat(machineId, sessionId),
             chat = emptyList(),
@@ -457,35 +481,117 @@ class AppState(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(chatLoading = false)
             return
         }
-        viewModelScope.launch {
-            val raw = withContext(Dispatchers.IO) {
-                runCatching {
-                    // хвост: телефону нужен разговор, а не архив
-                    val head = client?.file(path, Long.MAX_VALUE)
-                    val size = head?.size ?: 0
-                    val from = (size - TAIL_BYTES).coerceAtLeast(0)
-                    val chunk = client?.file(path, from)
-                    val text = chunk?.data.orEmpty()
-                    if (from > 0) text.substringAfter('\n') else text
-                }.getOrDefault("")
+        chatTail = viewModelScope.launch { tailChat(sessionId, path) }
+    }
+
+    /**
+     * Живой чат: дочитываем транскрипт, пока экран открыт.
+     *
+     * Раньше это был СНИМОК — транскрипт читался один раз при входе. Агент
+     * отвечал, а на экране не менялось ничего, пока не выйдешь и не зайдёшь
+     * снова. Список сессий при этом обновлялся, поэтому неподвижный чат
+     * читался как «зависло».
+     *
+     * Дочитываем инкрементально, с последнего смещения: перечитывать хвост
+     * целиком раз в несколько секунд — это мегабайты через ssh на телефоне.
+     */
+    private suspend fun tailChat(sessionId: String, path: String) {
+        var offset = 0L
+        var rest = ""            // недописанная строка ждёт следующего круга
+        val items = mutableListOf<ChatItem>()
+        var raw = StringBuilder()
+        var first = true
+
+        while (currentCoroutineContext().isActive) {
+            val c = client
+            if (c == null) { delay(TAIL_IDLE_MS); continue }
+            val chunk = try {
+                withContext(Dispatchers.IO) {
+                    if (first) {
+                        // Первый заход — хвост файла: телефону нужен разговор,
+                        // а не архив.
+                        val head = c.file(path, Long.MAX_VALUE)
+                        val size = head?.size ?: 0
+                        offset = (size - TAIL_BYTES).coerceAtLeast(0)
+                        c.file(path, offset)
+                    } else {
+                        c.file(path, offset)
+                    }
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                delay(TAIL_IDLE_MS)
+                continue
             }
-            // Один разбор на три списка: лента, артефакты и параллельные работы
-            // читают один и тот же текст, второй раз тянуть его незачем.
-            val items = withContext(Dispatchers.Default) { Transcript.parse(raw) }
-            val report = withContext(Dispatchers.Default) { Activity.parse(raw) }
-            _state.value = _state.value.copy(
-                chat = items.takeLast(120),
-                artifacts = Artifacts.from(items),
-                commands = Artifacts.commands(items),
-                workers = report.workers,
-                // Модель — из транскрипта, она там в каждой записи ассистента.
-                vitals = _state.value.vitals.copy(model = VitalsReader.friendly(report.model)),
-                chatLoading = false,
-            )
-            // Effort наружу не отдаётся нигде, кроме подвала самого агента:
-            // читаем экран паны, если она есть.
-            loadVitals(sessionId)
+            if (chunk == null) { // транскрипта ещё нет
+                if (first) { _state.value = _state.value.copy(chatLoading = false); first = false }
+                delay(TAIL_IDLE_MS)
+                continue
+            }
+            if (chunk.rewound(offset)) {
+                // Файл переписали (/clear, новый rollout) — приклеивать новое к
+                // старому не к чему.
+                items.clear(); raw = StringBuilder(); rest = ""
+            }
+            var text = chunk.data
+            if (first && offset > 0) text = text.substringAfter('\n') // обрезанная первая строка
+            offset = chunk.next
+
+            if (text.isNotEmpty()) {
+                val combined = rest + text
+                val lines = combined.split('\n')
+                rest = lines.last()
+                val whole = lines.dropLast(1).joinToString("\n")
+                if (whole.isNotBlank()) {
+                    raw.append(whole).append('\n')
+                    val fresh = withContext(Dispatchers.Default) { Transcript.parse(whole) }
+                    items.addAll(fresh)
+                    // Работы пересобираем, только если в новом куске были вызовы
+                    // инструментов или уведомления о задачах: иначе их состояние
+                    // измениться не могло, а разбор всего текста не бесплатен.
+                    val touched = "tool_use" in whole || "task-id" in whole
+                    val report = if (touched || first) {
+                        withContext(Dispatchers.Default) { Activity.parse(raw.toString()) }
+                    } else {
+                        null
+                    }
+                    _state.value = _state.value.copy(
+                        chat = items.takeLast(CHAT_WINDOW),
+                        artifacts = Artifacts.from(items),
+                        commands = Artifacts.commands(items),
+                        workers = report?.workers ?: _state.value.workers,
+                        vitals = _state.value.vitals.copy(
+                            model = report?.model?.takeIf { it.isNotBlank() }
+                                ?.let { VitalsReader.friendly(it) }
+                                ?: _state.value.vitals.model,
+                        ),
+                        chatLoading = false,
+                    )
+                }
+            }
+            if (first) {
+                _state.value = _state.value.copy(chatLoading = false)
+                // Effort наружу не отдаётся нигде, кроме подвала самого агента.
+                loadVitals(sessionId)
+                first = false
+            }
+            // Дочитали до конца — ждём; не дочитали (большой кусок) — сразу дальше.
+            if (chunk.next >= chunk.size) delay(TAIL_IDLE_MS)
         }
+    }
+
+    /**
+     * Прервать агента.
+     *
+     * Escape — то же, чем прерывают его в терминале. Без этого единственным
+     * ответом на «делает не то» было ожидание: остановить работу с телефона
+     * было нечем. Подтверждения не спрашиваем — прерывание обратимо, в отличие
+     * от `/clear`.
+     */
+    fun interrupt(sessionId: String) {
+        sendKey(sessionId, "Escape")
+        _state.value = _state.value.copy(notice = "Прервал — агент остановится на текущем шаге")
     }
 
     fun reply(sessionId: String, text: String) {
@@ -757,6 +863,11 @@ class AppState(app: Application) : AndroidViewModel(app) {
         // Человек ушёл сам — отложенное открытие из уведомления отменяется.
         // Иначе оно выстрелит через полчаса и утащит его обратно.
         pendingChat = null
+        // Ушли из чата — дочитывать нечего: экран закрыт, а трафик платный.
+        if (_state.value.screen is Screen.Chat) {
+            chatTail?.cancel()
+            chatTail = null
+        }
         // Открытый артефакт закрывается первым: он лежит поверх экрана, и
         // «назад» из него означает вернуться к тому же экрану, а не глубже.
         if (_state.value.artifact != null) {
@@ -823,5 +934,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
         const val POLL_FLOOR_MS = 800L
         /** Сколько хвоста артефакта тянуть: экран телефона всё равно меньше. */
         const val ARTIFACT_BYTES = 128L * 1024
+        /** Пауза между дочитываниями открытого чата. */
+        const val TAIL_IDLE_MS = 3_000L
+        /** Сколько строк ленты держим на экране: выше — уже не читают, а листают. */
+        const val CHAT_WINDOW = 200
     }
 }

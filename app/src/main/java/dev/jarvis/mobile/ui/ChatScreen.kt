@@ -99,7 +99,17 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = PagePad, vertical = 8.dp),
             onSelect = { tab = it },
         )
-        if (session?.status == Status.WORKING) ThinkingStrip()
+        // Прерывание — рядом с признаком работы: именно в этот момент оно и
+        // нужно, а в остальное время прерывать нечего.
+        if (session?.status == Status.WORKING) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = PagePad),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.weight(1f)) { ThinkingStrip() }
+                TextButton(onClick = { app.interrupt(sessionId) }) { Text("Прервать") }
+            }
+        }
 
         if (tab == 1) {
             WorkersPane(state.workers, Modifier.weight(1f))

@@ -89,7 +89,13 @@ class MainActivity : ComponentActivity() {
             val owner = LocalLifecycleOwner.current
             LaunchedEffect(owner) {
                 val obs = LifecycleEventObserver { _, event ->
-                    if (event == Lifecycle.Event.ON_START) app.onResume()
+                    when (event) {
+                        Lifecycle.Event.ON_START -> app.onResume()
+                        // Экран погас или ушли в другое приложение — дочитывать
+                        // чат незачем: смотреть некому, а трафик платный.
+                        Lifecycle.Event.ON_STOP -> app.onBackground()
+                        else -> Unit
+                    }
                 }
                 owner.lifecycle.addObserver(obs)
             }
