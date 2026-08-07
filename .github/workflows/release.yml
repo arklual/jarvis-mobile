@@ -25,8 +25,21 @@ jobs:
       # Отладочная сборка намеренно: своего keystore у проекта пока нет, а
       # отладочный ключ Android для установки себе принимает. Появится
       # keystore — здесь добавится signingConfig и сборка станет release.
+      # versionCode должен монотонно расти, иначе Android откажется ставить
+      # сборку поверх предыдущей. Считаем его из тега: 0.4.1 → 401.
+      - name: Версия из тега
+        id: v
+        run: |
+          name="${GITHUB_REF_NAME#v}"
+          IFS=. read -r major minor patch <<< "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$(( major * 10000 + minor * 100 + patch ))" >> "$GITHUB_OUTPUT"
+
       - name: Сборка
-        run: ./gradlew assembleDebug --no-daemon
+        run: >
+          ./gradlew assembleDebug --no-daemon
+          -PappVersion=${{ steps.v.outputs.name }}
+          -PappVersionCode=${{ steps.v.outputs.code }}
 
       - name: Имя по версии тега
         run: cp app/build/outputs/apk/debug/app-debug.apk jarvis-mobile-${{ github.ref_name }}.apk

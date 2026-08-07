@@ -1,3 +1,11 @@
+/**
+ * Версия приходит с тега релиза: в собранном APK она была прибита гвоздями, и
+ * установленное приложение называло себя 0.1.0 независимо от того, что за
+ * сборка на телефоне. Локально — те же значения по умолчанию.
+ */
+val appVersion = (findProperty("appVersion") as String?) ?: "0.0.0-dev"
+val appVersionCode = (findProperty("appVersionCode") as String?)?.toInt() ?: 1
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -13,8 +21,8 @@ android {
         applicationId = "dev.jarvis.mobile"
         minSdk = 26 // sshj требует API 26+ (java.time, современные шифры)
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersion
     }
 
     buildTypes {
