@@ -93,6 +93,18 @@ class ReducerTest {
         assertEquals(Status.FAILED, unknown.status)
         assertTrue("человеку нужно знать, ждать или повторять", unknown.detail.isNotBlank())
 
+        // Служебные поля в разборе не участвуют. Идентификатор сессии
+        // шестнадцатеричный, «429» в нём — обычное дело, а каталог проекта
+        // человек называет как хочет.
+        val innocent = Reducer.apply(emptyMap(), listOf(
+            event("""{"event":"stop-failure","payload":{
+                       "session_id":"a429f00d","cwd":"/home/bob/credit-scoring",
+                       "transcript_path":"/home/bob/.claude/projects/capacity/x.jsonl",
+                       "error":"connection closed"}}""", at = 1),
+        ))["a429f00d"]!!
+        assertEquals(Status.FAILED, innocent.status)
+        assertEquals("ход прервался ошибкой", innocent.detail)
+
         // Обычная остановка по-прежнему «закончила».
         val ok = Reducer.apply(emptyMap(), listOf(
             event("""{"event":"stop","payload":{"session_id":"a"}}""", at = 1),

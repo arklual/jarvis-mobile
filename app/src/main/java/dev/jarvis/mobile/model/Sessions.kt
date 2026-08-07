@@ -116,9 +116,29 @@ object Reducer {
     private val RATE = Regex("rate.?limit|usage limit|quota|429|limit reached|limit_exceeded", RegexOption.IGNORE_CASE)
     private val OVERLOAD = Regex("overload|503|529|capacity", RegexOption.IGNORE_CASE)
 
-    /** Что именно случилось на `stop-failure` — по всей полезной нагрузке разом. */
+    /**
+     * Служебные поля: смотреть в них — значит гадать по путям и идентификаторам.
+     *
+     * Первая версия искала по всей полезной нагрузке разом, а там всегда лежат
+     * `session_id`, `cwd` и путь транскрипта. Идентификатор сессии
+     * шестнадцатеричный, так что «429» в нём встречается запросто — и любой
+     * сорвавшийся ход такой сессии объявлялся упиранием в лимит. Проект в
+     * каталоге `credit-scoring` давал «ошибку биллинга» тем же способом.
+     */
+    private val STRUCTURAL = setOf(
+        "session_id", "cwd", "transcript_path", "tmux_pane", "pane",
+        "hook_event_name", "notification_type", "permission_mode", "tool_name",
+    )
+
+    /** Собрать из полезной нагрузки только то, что может быть текстом ошибки. */
+    private fun errorText(payload: JsonObject): String =
+        payload.entries
+            .filter { it.key !in STRUCTURAL }
+            .joinToString(" ") { (_, v) -> v.toString() }
+
+    /** Что именно случилось на `stop-failure` — по тексту ошибки, а не по путям. */
     fun classify(payload: JsonObject): Failure {
-        val raw = payload.toString()
+        val raw = errorText(payload)
         return when {
             BILLING.containsMatchIn(raw) -> Failure.BILLING
             RATE.containsMatchIn(raw) -> Failure.LIMIT
@@ -175,7 +195,11 @@ fun String.oneLine(limit: Int): String {
 
 /** Свежие сверху, спрашивающие — выше всех: за ними и лезут в телефон. */
 fun Collection<Session>.sortedForList(): List<Session> = sortedWith(
-    compareByDescending<Session> { it.status == Status.WAITING }.thenByDescending { it.updatedAt }
+    // Наверх — всё, что само не поедет: сначала вопрос (ответ нужен сейчас),
+    // следом вставшие. Работающие едут сами, их место ниже.
+    compareByDescending<Session> { it.status == Status.WAITING }
+        .thenByDescending { it.status == Status.LIMIT || it.status == Status.FAILED }
+        .thenByDescending { it.updatedAt }
 )
 
 /** Заглушка на случай, если конверт не принёс ничего именуемого. */
