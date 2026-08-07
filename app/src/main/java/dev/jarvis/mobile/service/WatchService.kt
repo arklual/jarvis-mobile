@@ -163,6 +163,10 @@ class WatchService : Service() {
             }
             live = client
             attempt = 0
+            // Собрать реестр заново, не объявляя об этом. Взводится разрывом
+            // ленты; при первом запуске не нужен — курсор и так ставится на
+            // «что произойдёт дальше».
+            var reseed = false
             if (cursor < 0) {
                 // Следим за тем, что произойдёт ДАЛЬШЕ, а не за историей.
                 cursor = runCatching { client.hello().cursor }.getOrDefault(0)
@@ -171,14 +175,19 @@ class WatchService : Service() {
                 while (scope.isActive) {
                     val page = client.events(cursor)
                     if (page.gap) {
-                    // Лента порвалась: старый реестр держит мёртвые паны, и
-                    // ответ ушёл бы в никуда.
-                    registry = emptyMap()
-                    known = emptyMap()
-                }
+                        // Лента порвалась: старый реестр держит мёртвые паны, и
+                        // ответ ушёл бы в никуда.
+                        registry = emptyMap()
+                        known = emptyMap()
+                        // Следующую порцию собираем молча. Сравнивать её не с
+                        // чем, и каждая сессия выглядела бы только что
+                        // изменившейся — телефон разом вывалил бы горсть
+                        // уведомлений про работу, законченную час назад.
+                        reseed = true
+                    }
                     if (page.events.isNotEmpty()) {
                         val next = Reducer.apply(registry, page.events)
-                        notifyChanges(prefs, registry, next)
+                        if (reseed) reseed = false else notifyChanges(prefs, registry, next)
                         registry = next
                         known = next
                     }
