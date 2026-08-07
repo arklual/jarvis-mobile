@@ -17,10 +17,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,12 +35,21 @@ import dev.jarvis.mobile.AppState
 import dev.jarvis.mobile.UiState
 import dev.jarvis.mobile.data.AuthKind
 import dev.jarvis.mobile.data.Machine
+import dev.jarvis.mobile.Probe
 
 /** Список машин: точка входа, и потому — самый спокойный экран приложения. */
 @Composable
 fun MachinesScreen(state: UiState, app: AppState) {
     var editing by remember { mutableStateOf<Machine?>(null) }
     var removing by remember { mutableStateOf<Machine?>(null) }
+
+    val checking = state.probes.values.any { it.checking }
+    // Сводка стареет: пока телефон лежал в кармане, всё могло измениться. Но и
+    // ломиться по SSH на каждый показ экрана незачем — только если давно.
+    LaunchedEffect(state.machines.size) {
+        val fresh = state.probes.values.any { System.currentTimeMillis() - it.at < PROBE_FRESH_MS }
+        if (state.machines.isNotEmpty() && !fresh) app.checkAll()
+    }
 
     val target = editing
     if (target != null) {
@@ -98,6 +109,8 @@ fun MachinesScreen(state: UiState, app: AppState) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    Spacer(Modifier.height(6.dp))
+                    ProbeLine(state.probes[machine.id])
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = { editing = machine }) { Text("Править") }
                         TextButton(onClick = { removing = machine }) { Text("Удалить") }
@@ -105,18 +118,62 @@ fun MachinesScreen(state: UiState, app: AppState) {
                 }
             }
         }
-        Button(
-            onClick = {
-                editing = Machine(
-                    id = System.currentTimeMillis().toString(),
-                    name = "",
-                    host = "",
-                    user = "",
-                )
-            },
-            modifier = Modifier.fillMaxWidth().padding(PagePad),
-        ) { Text("Добавить машину") }
+        Row(
+            Modifier.fillMaxWidth().padding(PagePad),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = { app.checkAll() },
+                modifier = Modifier.weight(1f),
+                enabled = state.machines.isNotEmpty() && !checking,
+            ) { Text(if (checking) "Смотрю…" else "Проверить все") }
+            Button(
+                onClick = {
+                    editing = Machine(
+                        id = System.currentTimeMillis().toString(),
+                        name = "",
+                        host = "",
+                        user = "",
+                    )
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Добавить") }
+        }
     }
+}
+
+/**
+ * Строка сводки на карточке машины.
+ *
+ * Числа, а не значки: «1 ждёт ответа» человек читает с одного взгляда и сразу
+ * знает, стоит ли вообще заходить. Тишину проговариваем словом — пустая строка
+ * неотличима от «ещё не проверяли», а это разные вещи.
+ */
+@Composable
+private fun ProbeLine(probe: Probe?) {
+    val scheme = MaterialTheme.colorScheme
+    val (text, color) = when {
+        probe == null -> "не проверялась" to scheme.onSurfaceVariant
+        probe.checking -> "смотрю…" to scheme.onSurfaceVariant
+        probe.error != null -> probe.error to scheme.error
+        probe.quiet -> "тихо" to scheme.onSurfaceVariant
+        else -> buildList {
+            if (probe.waiting > 0) add("${probe.waiting} ждёт ответа")
+            if (probe.working > 0) add("${probe.working} в работе")
+            if (probe.done > 0) add("${probe.done} закончил")
+        }.joinToString(" · ") to
+            // Ждущая сессия — единственное, ради чего стоит тянуться к телефону
+            // прямо сейчас; всё остальное идёт своим ходом.
+            if (probe.waiting > 0) scheme.primary else scheme.onSurfaceVariant
+    }
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = color,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+    )
+    Spacer(Modifier.height(2.dp))
 }
 
 @Composable
@@ -215,3 +272,6 @@ private fun Field(
         modifier = modifier.fillMaxWidth(),
     )
 }
+
+/** Насколько сводка считается свежей: минута — цена SSH-рукопожатия к каждой. */
+private const val PROBE_FRESH_MS = 60_000L

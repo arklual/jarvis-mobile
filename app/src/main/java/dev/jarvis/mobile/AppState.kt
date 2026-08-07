@@ -17,6 +17,7 @@ import dev.jarvis.mobile.model.Picker
 import dev.jarvis.mobile.model.PickerReader
 import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
+import dev.jarvis.mobile.model.Status
 import dev.jarvis.mobile.model.Vitals
 import dev.jarvis.mobile.model.VitalsReader
 import dev.jarvis.mobile.model.Worker
@@ -57,6 +58,8 @@ sealed interface Screen {
 data class UiState(
     val screen: Screen = Screen.Machines,
     val machines: List<Machine> = emptyList(),
+    /** Сводка по каждой машине: ключ — id машины. */
+    val probes: Map<String, Probe> = emptyMap(),
     /** Состояние связи — по нему рисуется и шапка, и всё, что зависит от узла. */
     val link: Link = Link.Idle,
     val connecting: Boolean = false,
@@ -102,6 +105,26 @@ data class UiState(
      */
     val pane: PaneView? = null,
 )
+
+/**
+ * Беглый опрос машины: что на ней происходит прямо сейчас.
+ *
+ * Телефон достают, чтобы узнать «кто меня ждёт», а не «что на машине N».
+ * Раньше ответ на этот вопрос требовал подключиться к каждой машине по
+ * очереди — то есть его просто не получали.
+ */
+data class Probe(
+    val checking: Boolean = false,
+    val waiting: Int = 0,
+    val working: Int = 0,
+    val done: Int = 0,
+    /** Не дозвонились: причина короткой строкой, чинить-то всё равно человеку. */
+    val error: String? = null,
+    val at: Long = 0,
+) {
+    val answered: Boolean get() = error == null && at > 0
+    val quiet: Boolean get() = answered && waiting == 0 && working == 0 && done == 0
+}
 
 data class PaneView(
     val sessionId: String,
@@ -161,6 +184,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private var tunnel: SshTunnel? = null
     private var client: NodeClient? = null
     private var poller: Job? = null
+    /** Обход машин для сводки: он длинный, и уходя с экрана его гасят. */
+    private var probeJob: Job? = null
     /** Дочитывание открытого чата: живёт ровно пока чат на экране. */
     private var chatTail: Job? = null
     /**
@@ -267,6 +292,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
 
     fun open(machineId: String) {
         val machine = _state.value.machines.firstOrNull { it.id == machineId } ?: return
+        // Обход машин отменяем: человек уже выбрал, куда идти, и делить с ним
+        // радиоканал ради сводки, которую он больше не увидит, незачем.
+        probeJob?.cancel()
+        probeJob = null
         disconnect()
         cursor = 0 // другая машина — другая лента
         registry = emptyMap()
@@ -388,6 +417,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
      */
     fun onBackground() {
         foreground = false
+        probeJob?.cancel()
+        probeJob = null
         chatTail?.cancel()
         chatTail = null
     }
@@ -411,13 +442,14 @@ class AppState(app: Application) : AndroidViewModel(app) {
         supervise(machine)
     }
 
-    private fun connect(machine: Machine) {
+    /** Туннель к машине. Порт локальной стороны выбирает система — их бывает много. */
+    private fun tunnelFor(machine: Machine): SshTunnel {
         val secret = secrets.secret(machine.id).orEmpty()
         val auth = when (machine.authKind) {
             AuthKind.PASSWORD -> SshTunnel.Auth.Password(secret)
             AuthKind.KEY -> SshTunnel.Auth.PrivateKey(secret, secrets.passphrase(machine.id))
         }
-        val t = SshTunnel(
+        return SshTunnel(
             host = machine.host,
             port = machine.port,
             user = machine.user,
@@ -425,6 +457,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
             remotePort = machine.nodePort,
             knownHosts = MapKnownHosts(secrets.knownHosts()),
         )
+    }
+
+    private fun connect(machine: Machine) {
+        val t = tunnelFor(machine)
         val local = t.open()
         tunnel = t
         client = NodeClient("http://127.0.0.1:$local")
@@ -445,6 +481,64 @@ class AppState(app: Application) : AndroidViewModel(app) {
         runCatching { tunnel?.close() }
         tunnel = null
         client = null
+    }
+
+    /* ================= сводка по машинам ================= */
+
+    /**
+     * Обойти все машины и узнать, где что происходит.
+     *
+     * По очереди, а не разом: каждая проверка — это SSH-рукопожатие, и три
+     * одновременных на телефоне означают три радиосеанса и заметный разряд ради
+     * экрана, на который смотрят пару секунд. Открытая связь не трогается —
+     * машину, к которой уже подключены, читаем из её же реестра.
+     */
+    fun checkAll() {
+        probeJob?.cancel()
+        probeJob = viewModelScope.launch {
+            for (machine in _state.value.machines) {
+                if (currentMachineId() == machine.id && _state.value.link.online) {
+                    setProbe(machine.id, count(registry.values))
+                    continue
+                }
+                setProbe(machine.id, Probe(checking = true))
+                val probe = withContext(Dispatchers.IO) { probe(machine) }
+                setProbe(machine.id, probe)
+            }
+        }
+    }
+
+    private fun probe(machine: Machine): Probe {
+        var t: SshTunnel? = null
+        return try {
+            val tunnel = tunnelFor(machine).also { t = it }
+            val local = tunnel.open()
+            val c = NodeClient("http://127.0.0.1:$local")
+            // Ждать нечего: если на машине что-то происходило, события уже лежат
+            // в кольце узла и приедут сразу.
+            val page = c.events(0, wait = false)
+            count(Reducer.apply(emptyMap(), page.events).values)
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (e: Exception) {
+            // Молчание узла на пустом кольце — это «тихо», а не поломка: сессий
+            // на машине попросту нет, и говорить человеку про ошибку нечестно.
+            if (e is java.net.SocketTimeoutException) Probe(at = System.currentTimeMillis())
+            else Probe(error = human(e), at = System.currentTimeMillis())
+        } finally {
+            runCatching { t?.close() }
+        }
+    }
+
+    private fun count(sessions: Collection<Session>): Probe = Probe(
+        waiting = sessions.count { it.status == Status.WAITING || it.question != null },
+        working = sessions.count { it.status == Status.WORKING },
+        done = sessions.count { it.status == Status.DONE },
+        at = System.currentTimeMillis(),
+    )
+
+    private fun setProbe(id: String, probe: Probe) {
+        _state.update { it.copy(probes = it.probes + (id to probe)) }
     }
 
     /* ================= чат ================= */
