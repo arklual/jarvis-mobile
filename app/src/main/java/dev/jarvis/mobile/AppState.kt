@@ -290,9 +290,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
         secrets.machinesRaw = Machines.encode(next)
         if (secret != null) secrets.setSecret(machine.id, secret)
         if (passphrase != null) secrets.setPassphrase(machine.id, passphrase)
-        // Сводку удалённой машины уносим с собой: иначе она продолжает
-        // считаться в занятости и может блокировать кнопку обхода.
-        _state.update { it.copy(machines = next.items, probes = it.probes - id) }
+        // Машину правили — прежняя сводка снята с другого адреса, и держать
+        // её на карточке значит показывать чужой ответ.
+        _state.update { it.copy(machines = next.items, probes = it.probes - machine.id) }
     }
 
     fun removeMachine(id: String) {
@@ -300,7 +300,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
         secrets.machinesRaw = Machines.encode(next)
         secrets.setSecret(id, null)
         secrets.setPassphrase(id, null)
-        _state.value = _state.value.copy(machines = next.items)
+        // Сводку уносим с собой: иначе она продолжает считаться в занятости и
+        // может заблокировать кнопку обхода.
+        _state.update { it.copy(machines = next.items, probes = it.probes - id) }
     }
 
     /* ================= подключение ================= */
