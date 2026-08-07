@@ -403,9 +403,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
                 registry = Reducer.apply(registry, page.events)
                 val list = registry.values.sortedForList()
                 _state.update { it.copy(sessions = list, error = null) }
-                // У сессии, поднятой из приложения, транскрипта в момент входа
-                // ещё не было — начинаем дочитывать, как только он появился.
-                if (chatTail == null) resumeTail()
+                // Дочитывание могло не начаться (транскрипта ещё не было),
+                // умереть или остаться на старом файле — resumeTail разберётся
+                // сам, а живое дочитывание он не трогает.
+                resumeTail()
                 // Сессия из уведомления дождалась своего появления в реестре.
                 pendingChat?.let { sid ->
                     if (registry.containsKey(sid)) {
@@ -651,7 +652,11 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private fun resumeTail() {
         if (!foreground) return
         val screen = _state.value.screen
-        if (screen !is Screen.Chat || chatTail != null) return
+        if (screen !is Screen.Chat) return
+        // Именно «жив ли», а не «есть ли»: упавшая корутина оставляет ссылку на
+        // себя, и по ней дочитывание выглядит идущим, хотя его нет. Чат тогда
+        // замирает навсегда — до выхода и повторного входа.
+        if (chatTail?.isActive == true) return
         val path = registry[screen.sessionId]?.transcript
         if (path == null) {
             _state.update { it.copy(chatLoading = false) }
@@ -659,7 +664,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
         }
         val f = feed?.takeIf { it.sessionId == screen.sessionId && it.path == path }
             ?: ChatFeed(screen.sessionId, path).also { feed = it }
-        chatTail = viewModelScope.launch { tailChat(f) }
+        val job = viewModelScope.launch { tailChat(f) }
+        chatTail = job
+        job.invokeOnCompletion { if (chatTail === job) chatTail = null }
     }
 
     /**
@@ -676,6 +683,12 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private suspend fun tailChat(feed: ChatFeed) {
         var first = true
         while (currentCoroutineContext().isActive) {
+            // Транскрипт сменился: агент пишет в НОВЫЙ файл после `--resume` и
+            // после сжатия контекста. Старый при этом просто перестаёт расти —
+            // с виду это неотличимо от «агент молчит», и лента замирает до
+            // выхода из чата. Уходим, дочитывание поднимется уже по новому пути.
+            val fresh = registry[feed.sessionId]?.transcript
+            if (fresh != null && fresh != feed.path) return
             val c = client
             if (c == null) { delay(TAIL_IDLE_MS); continue }
             val chunk = try {
@@ -700,7 +713,18 @@ class AppState(app: Application) : AndroidViewModel(app) {
             }
             // Разбор и пересборка списков — не на главном потоке: это проход по
             // новым строкам плюс сортировки, а круг идёт каждые три секунды.
-            val snap = withContext(Dispatchers.Default) { feed.accept(chunk) }
+            //
+            // Одна битая строка не имеет права уносить с собой всю ленту:
+            // упавшая корутина не возобновляется, и человек видит застывший
+            // чат без единого признака поломки.
+            val snap = try {
+                withContext(Dispatchers.Default) { feed.accept(chunk) }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                delay(TAIL_IDLE_MS)
+                continue
+            }
             if (snap != null) {
                 _state.update {
                     it.copy(
