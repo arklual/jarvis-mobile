@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Ручной запуск: когда прогон не создался сам (кончились минуты, сбой
+  # GitHub), пересобрать надо уметь, не делая пустой коммит.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
