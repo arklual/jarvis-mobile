@@ -582,7 +582,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
                 first = false
             }
             // Дочитали до конца — ждём; не дочитали (большой кусок) — сразу дальше.
-            if (chunk.next >= chunk.size) delay(TAIL_IDLE_MS)
+            if (chunk.eof) delay(TAIL_IDLE_MS)
         }
     }
 
@@ -611,13 +611,6 @@ class AppState(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Снять экран паны, чтобы увидеть настоящие варианты ответа.
-     *
-     * Дёргается, когда человек открыл чат сессии с вопросом. Без этого кнопки
-     * пришлось бы выдумывать — и они появлялись бы даже там, где агент просто
-     * закончил работу.
-     */
     /**
      * Дочитать effort с экрана агента.
      *
@@ -650,6 +643,13 @@ class AppState(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Снять экран паны, чтобы увидеть настоящие варианты ответа.
+     *
+     * Дёргается, когда человек открыл чат сессии с вопросом. Без этого кнопки
+     * пришлось бы выдумывать — и они появлялись бы даже там, где агент просто
+     * закончил работу.
+     */
     fun showPane(sessionId: String, title: String) {
         val paneId = registry[sessionId]?.pane ?: return fail("Сессия не в tmux — экрана нет")
         val c = client ?: return

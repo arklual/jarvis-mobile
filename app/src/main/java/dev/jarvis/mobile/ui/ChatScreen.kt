@@ -108,7 +108,13 @@ fun ChatScreen(state: UiState, app: AppState, sessionId: String) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.weight(1f)) { ThinkingStrip(inset = false) }
-                TextButton(onClick = { app.interrupt(sessionId) }) { Text("Прервать") }
+                // Escape подряд — это уже не «прервать», а выход из режима ввода
+                // в самом агенте: одного нажатия достаточно, дальше ждём.
+                var sent by remember(sessionId) { mutableStateOf(false) }
+                TextButton(
+                    onClick = { sent = true; app.interrupt(sessionId) },
+                    enabled = !sent,
+                ) { Text(if (sent) "Прерываю…" else "Прервать") }
             }
         }
 
