@@ -26,6 +26,18 @@ class Prefs(context: Context) {
         set(v) = p.edit().putBoolean(WAITING, v).apply()
 
     /**
+     * Уведомлять, когда работа встала сама по себе.
+     *
+     * Отдельно от «закончил»: там работа сделана и её ждут посмотреть, а тут
+     * она СТОИТ — упёрлись в лимит или ход сорвался ошибкой. Свести их в один
+     * тумблер значило бы предложить человеку выбор между «знать про обе вещи»
+     * и «не знать ни про одну».
+     */
+    var notifyStuck: Boolean
+        get() = p.getBoolean(STUCK, true)
+        set(v) = p.edit().putBoolean(STUCK, v).apply()
+
+    /**
      * Держать связь, пока приложение свёрнуто.
      *
      * Без этого уведомлений не будет вовсе: Android останавливает обычные
@@ -45,6 +57,7 @@ class Prefs(context: Context) {
     private companion object {
         const val DONE = "notifyDone"
         const val WAITING = "notifyWaiting"
+        const val STUCK = "notifyStuck"
         const val KEEP = "keepAlive"
         const val WATCH = "watchMachine"
     }

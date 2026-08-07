@@ -90,6 +90,15 @@ fun SettingsScreen(state: UiState, app: AppState, onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(14.dp))
                 Toggle(
+                    title = "Когда работа встала",
+                    hint = "Упёрлись в лимит или ход сорвался ошибкой — сама не поедет.",
+                    checked = prefs.notifyStuck,
+                ) {
+                    if (it) askIfNeeded()
+                    app.setPref(stuck = it)
+                }
+                Spacer(Modifier.height(14.dp))
+                Toggle(
                     title = "Когда агент спрашивает",
                     hint = "Агент встал на вопросе и без ответа дальше не пойдёт.",
                     checked = prefs.notifyWaiting,

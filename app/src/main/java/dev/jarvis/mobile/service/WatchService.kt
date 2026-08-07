@@ -271,6 +271,17 @@ class WatchService : Service() {
                         canReply = now.pane != null,
                     )
                 }
+                // Встала сама: работа не сделана и не продолжится, пока не
+                // вмешаются. Это едва ли не важнее «закончила» — там просто
+                // ждут взгляда, а тут всё стоит.
+                Status.LIMIT, Status.FAILED -> if (prefs.notifyStuck) {
+                    Notifier.alert(
+                        this,
+                        id,
+                        "${now.title()} — ${if (now.status == Status.LIMIT) "лимит" else "сорвалась"}",
+                        now.detail.ifBlank { "работа остановилась" },
+                    )
+                }
                 else -> Unit
             }
         }

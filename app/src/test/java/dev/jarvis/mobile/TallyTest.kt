@@ -37,4 +37,15 @@ class TallyTest {
     fun `пустой список — не о чем говорить`() {
         assertFalse(emptyList<Session>().tally().any)
     }
+
+    @Test
+    fun `вставшие считаются отдельно от работающих`() {
+        val t = listOf(
+            Session(id = "1", status = Status.LIMIT),
+            Session(id = "2", status = Status.FAILED),
+            Session(id = "3", status = Status.WORKING),
+        ).tally()
+        assertEquals(2, t.stuck)
+        assertEquals(1, t.working)
+    }
 }

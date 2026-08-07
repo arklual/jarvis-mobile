@@ -207,10 +207,17 @@ fun StatusMark(status: Status, modifier: Modifier = Modifier) {
                     .size(10.dp)
                     .border(1.dp, scheme.outline, CircleShape)
             )
+            // Лимит и срыв — единственные состояния, которые сами не пройдут.
+            // Форма у них общая и заметная: квадрат среди кругов.
             Status.LIMIT -> Box(
                 Modifier
                     .size(9.dp)
                     .background(scheme.outline, RoundedCornerShape(2.dp))
+            )
+            Status.FAILED -> Box(
+                Modifier
+                    .size(9.dp)
+                    .background(scheme.error, RoundedCornerShape(2.dp))
             )
             Status.IDLE -> Box(
                 Modifier
@@ -227,6 +234,7 @@ fun statusWord(status: Status): String = when (status) {
     Status.WORKING -> "работает"
     Status.DONE -> "закончила"
     Status.LIMIT -> "лимит"
+    Status.FAILED -> "сорвалась"
     Status.IDLE -> "ждёт"
 }
 

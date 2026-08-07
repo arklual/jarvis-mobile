@@ -76,4 +76,27 @@ class ReducerTest {
         assertEquals("а б в", "а\n  б\t\tв".oneLine(50))
         assertTrue("x".repeat(200).oneLine(20).endsWith("…"))
     }
+
+    @Test
+    fun `сорванный ход не выдаётся за законченную работу`() {
+        fun stopFailure(error: String) = Reducer.apply(emptyMap(), listOf(
+            event("""{"event":"stop-failure","payload":{"session_id":"a","error":"$error"}}""", at = 1),
+        ))["a"]!!
+
+        // Раньше stop-failure сворачивался в DONE, и человек, увидев на телефоне
+        // «закончила», откладывал его — а работа стояла.
+        assertEquals(Status.LIMIT, stopFailure("429 rate_limit_error: usage limit reached").status)
+        assertEquals(Status.FAILED, stopFailure("API is overloaded (529)").status)
+        // Неизвестная ошибка — именно срыв, а НЕ лимит: перегрузка и обрыв сети
+        // случаются в разы чаще, и объявлять их упиранием в стену нечестно.
+        val unknown = stopFailure("something odd")
+        assertEquals(Status.FAILED, unknown.status)
+        assertTrue("человеку нужно знать, ждать или повторять", unknown.detail.isNotBlank())
+
+        // Обычная остановка по-прежнему «закончила».
+        val ok = Reducer.apply(emptyMap(), listOf(
+            event("""{"event":"stop","payload":{"session_id":"a"}}""", at = 1),
+        ))["a"]!!
+        assertEquals(Status.DONE, ok.status)
+    }
 }

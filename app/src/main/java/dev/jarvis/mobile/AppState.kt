@@ -118,6 +118,8 @@ data class Probe(
     val waiting: Int = 0,
     val working: Int = 0,
     val done: Int = 0,
+    /** Встали и сами не поедут: лимит или сорвавшийся ход. */
+    val stuck: Int = 0,
     /** Всего сессий: без него «ничего не происходит» неотличимо от «пусто». */
     val total: Int = 0,
     /** Не дозвонились: причина короткой строкой, чинить-то всё равно человеку. */
@@ -125,7 +127,9 @@ data class Probe(
     val at: Long = 0,
 ) {
     val answered: Boolean get() = error == null && at > 0
-    val busy: Boolean get() = waiting > 0 || working > 0 || done > 0
+    val busy: Boolean get() = waiting > 0 || working > 0 || done > 0 || stuck > 0
+    /** Требуется человек: либо спрашивают, либо встали. */
+    val needsYou: Boolean get() = waiting > 0 || stuck > 0
     /** Совсем ничего: ни одной сессии. Не то же самое, что «все спят». */
     val quiet: Boolean get() = answered && !busy && total == 0
 }
@@ -151,6 +155,8 @@ data class ArtifactView(
 data class PrefsView(
     val notifyDone: Boolean = true,
     val notifyWaiting: Boolean = true,
+    /** Работа встала сама: лимит или сорвавшийся ход. */
+    val notifyStuck: Boolean = true,
     val keepAlive: Boolean = false,
     /**
      * Приложение исключено из оптимизации батареи.
@@ -235,6 +241,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private fun readPrefs() = PrefsView(
         notifyDone = prefs.notifyDone,
         notifyWaiting = prefs.notifyWaiting,
+        notifyStuck = prefs.notifyStuck,
         keepAlive = prefs.keepAlive,
         batteryExempt = batteryExempt(),
     )
@@ -259,16 +266,22 @@ class AppState(app: Application) : AndroidViewModel(app) {
      * приложения, а push-канала в этой схеме нет: узел стоит на чужой машине и
      * наружу не смотрит.
      */
-    fun setPref(done: Boolean? = null, waiting: Boolean? = null, keepAlive: Boolean? = null) {
+    fun setPref(
+        done: Boolean? = null,
+        waiting: Boolean? = null,
+        stuck: Boolean? = null,
+        keepAlive: Boolean? = null,
+    ) {
         done?.let { prefs.notifyDone = it }
         waiting?.let { prefs.notifyWaiting = it }
+        stuck?.let { prefs.notifyStuck = it }
 
         // Включённый тумблер уведомлений без фоновой связи не делает НИЧЕГО:
         // приложение свёрнуто, корутины остановлены, узнать о завершении
         // неоткуда. Человек при этом видит включённый флаг и ждёт уведомлений —
         // худший исход из возможных. Поэтому связь поднимается вместе с ними;
         // цену (постоянное уведомление системы) экран настроек проговаривает.
-        val wantAlerts = prefs.notifyDone || prefs.notifyWaiting
+        val wantAlerts = prefs.notifyDone || prefs.notifyWaiting || prefs.notifyStuck
         val want = keepAlive ?: (if (wantAlerts) true else prefs.keepAlive)
         // А выключив последний тумблер уведомлений, держать связь незачем.
         val effective = if (!wantAlerts && keepAlive == null) false else want
@@ -558,6 +571,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
                 waiting = tally.waiting,
                 working = tally.working,
                 done = tally.done,
+                stuck = tally.stuck,
                 total = sessions.size,
                 at = now,
             )

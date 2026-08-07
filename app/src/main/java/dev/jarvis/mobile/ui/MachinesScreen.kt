@@ -171,12 +171,14 @@ private fun ProbeLine(probe: Probe?) {
         !probe.busy -> "${probe.total} ${plural(probe.total)}, ничего не происходит" to scheme.onSurfaceVariant
         else -> buildList {
             if (probe.waiting > 0) add("${probe.waiting} ждёт ответа")
+            // Встали — впереди работающих: они сами не поедут.
+            if (probe.stuck > 0) add("${probe.stuck} встало")
             if (probe.working > 0) add("${probe.working} в работе")
             if (probe.done > 0) add("${probe.done} закончил")
         }.joinToString(" · ") to
             // Ждущая сессия — единственное, ради чего стоит тянуться к телефону
             // прямо сейчас; всё остальное идёт своим ходом.
-            if (probe.waiting > 0) scheme.primary else scheme.onSurfaceVariant
+            if (probe.needsYou) scheme.primary else scheme.onSurfaceVariant
     }
     Text(
         text,

@@ -5,7 +5,29 @@ import dev.jarvis.mobile.transport.str
 import kotlinx.serialization.json.JsonObject
 
 /** Состояние сессии — сознательно грубее, чем у настольного Jarvis. */
-enum class Status { IDLE, WORKING, WAITING, DONE, LIMIT }
+enum class Status {
+    IDLE,
+    WORKING,
+    WAITING,
+    DONE,
+
+    /** Упёрлись в лимит аккаунта: работа не продолжится до сброса окна. */
+    LIMIT,
+
+    /** Ход оборвался ошибкой: перегрузка API, сеть, биллинг. Никто не продолжит. */
+    FAILED,
+}
+
+/**
+ * Чем закончился `stop-failure`.
+ *
+ * Правила те же, что в настольном Jarvis (`limits::classify_failure`): хук
+ * общий, значит и разбор должен быть общим — иначе телефон и ноутбук скажут о
+ * происходящем разное. Умолчание — «сорвался», а НЕ лимит: перегрузка API и
+ * обрыв сети случаются в разы чаще, и объявлять их упиранием в стену значит
+ * пугать человека там, где надо просто повторить.
+ */
+enum class Failure { LIMIT, BILLING, OVERLOADED, TRANSIENT }
 
 data class Session(
     val id: String,
@@ -58,7 +80,7 @@ object Reducer {
                 pane = env.str("tmux_pane")?.takeIf { it.isNotEmpty() } ?: prev.pane,
                 transcript = payload.str("transcript_path") ?: prev.transcript,
                 updatedAt = maxOf(rec.at, prev.updatedAt),
-                status = statusFor(event, asks, prev.status),
+                status = statusFor(event, asks, prev.status, payload),
                 question = questionFor(event, asks, payload, prev.question),
                 detail = detailFor(event, asks, payload, prev.detail),
             )
@@ -90,7 +112,22 @@ object Reducer {
     /** «Ждёт твоего ввода» — это конец работы, а не вопрос. */
     private val IDLE = Regex("waiting for your input", RegexOption.IGNORE_CASE)
 
-    private fun statusFor(event: String, asks: Boolean, prev: Status): Status = when {
+    private val BILLING = Regex("billing|payment|insufficient|credit", RegexOption.IGNORE_CASE)
+    private val RATE = Regex("rate.?limit|usage limit|quota|429|limit reached|limit_exceeded", RegexOption.IGNORE_CASE)
+    private val OVERLOAD = Regex("overload|503|529|capacity", RegexOption.IGNORE_CASE)
+
+    /** Что именно случилось на `stop-failure` — по всей полезной нагрузке разом. */
+    fun classify(payload: JsonObject): Failure {
+        val raw = payload.toString()
+        return when {
+            BILLING.containsMatchIn(raw) -> Failure.BILLING
+            RATE.containsMatchIn(raw) -> Failure.LIMIT
+            OVERLOAD.containsMatchIn(raw) -> Failure.OVERLOADED
+            else -> Failure.TRANSIENT
+        }
+    }
+
+    private fun statusFor(event: String, asks: Boolean, prev: Status, payload: JsonObject): Status = when {
         event == "prompt" || event == "pre-tool" || event == "post-tool" || event == "session-start" ->
             Status.WORKING
         // «спрашивает» — единственное состояние, ради которого стоит доставать
@@ -98,7 +135,12 @@ object Reducer {
         asks -> Status.WAITING
         // уведомление без вопроса — это «закончил, твой ход»
         event == "notification" -> Status.DONE
-        event == "stop" || event == "stop-failure" -> Status.DONE
+        // Сорванный ход — НЕ «закончил». Раньше он сворачивался в «закончила»,
+        // и человек, увидев это на телефоне, откладывал его в полной
+        // уверенности, что работа сделана. На деле она стояла.
+        event == "stop-failure" ->
+            if (classify(payload) == Failure.LIMIT) Status.LIMIT else Status.FAILED
+        event == "stop" -> Status.DONE
         else -> prev
     }
 
@@ -111,6 +153,12 @@ object Reducer {
 
     private fun detailFor(event: String, asks: Boolean, payload: JsonObject, prev: String): String = when {
         asks -> payload.str("message")?.oneLine(120) ?: "спрашивает"
+        event == "stop-failure" -> when (classify(payload)) {
+            Failure.LIMIT -> "лимит использования — до сброса окна не продолжится"
+            Failure.BILLING -> "ошибка биллинга"
+            Failure.OVERLOADED -> "API перегружен — можно повторить"
+            Failure.TRANSIENT -> "ход прервался ошибкой"
+        }
         event == "prompt" -> payload.str("prompt")?.oneLine(120) ?: "работает"
         event == "pre-tool" -> payload.str("tool_name")?.let { "выполняет $it" } ?: prev
         event == "stop" -> "закончила"
@@ -134,8 +182,14 @@ fun Collection<Session>.sortedForList(): List<Session> = sortedWith(
 fun Session.title(): String = project ?: cwd ?: id.take(8)
 
 /** Во что складывается список сессий: сколько ждёт, сколько работает, сколько кончило. */
-data class Tally(val waiting: Int = 0, val working: Int = 0, val done: Int = 0) {
-    val any: Boolean get() = waiting > 0 || working > 0 || done > 0
+data class Tally(
+    val waiting: Int = 0,
+    val working: Int = 0,
+    val done: Int = 0,
+    /** Встали и сами не поедут: упёрлись в лимит либо сорвались. */
+    val stuck: Int = 0,
+) {
+    val any: Boolean get() = waiting > 0 || working > 0 || done > 0 || stuck > 0
 }
 
 /**
@@ -151,10 +205,12 @@ fun Collection<Session>.tally(): Tally {
     var waiting = 0
     var working = 0
     var done = 0
+    var stuck = 0
     for (s in this) when {
         s.status == Status.WAITING || s.question != null -> waiting++
+        s.status == Status.LIMIT || s.status == Status.FAILED -> stuck++
         s.status == Status.WORKING -> working++
         s.status == Status.DONE -> done++
     }
-    return Tally(waiting, working, done)
+    return Tally(waiting, working, done, stuck)
 }
