@@ -1,6 +1,7 @@
 package dev.jarvis.mobile
 
 import dev.jarvis.mobile.model.Slash
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -27,5 +28,24 @@ class SlashTest {
         // предлагать несуществующую команду значит слать мусор в диалог
         assertTrue(claude.any { it.cmd == "/effort" })
         assertFalse(codex.any { it.cmd == "/effort" })
+    }
+    @Test
+    fun `поиск идёт и по имени, и по описанию`() {
+        val commands = Slash.forAgent("claude")
+        // Человек помнит либо косую черту, либо словами — палитра обязана
+        // находиться по обоим.
+        assertTrue(commands.filter { it.matches("rewind") }.any { it.cmd == "/rewind" })
+        assertTrue(commands.filter { it.matches("откат") }.any { it.cmd == "/rewind" })
+        // Ведущая косая черта не должна мешать: её набирают по привычке.
+        assertTrue(commands.filter { it.matches("/cost") }.any { it.cmd == "/cost" })
+        assertEquals("пустой запрос показывает всё", commands.size, commands.count { it.matches("  ") })
+    }
+
+    @Test
+    fun `необратимое помечено, обратимое — нет`() {
+        val commands = Slash.forAgent("claude")
+        assertTrue(commands.single { it.cmd == "/clear" }.danger)
+        // Сжатие контекста сохраняет суть и не должно требовать подтверждения.
+        assertFalse(commands.single { it.cmd == "/compact" }.danger)
     }
 }

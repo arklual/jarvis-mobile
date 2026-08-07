@@ -20,8 +20,23 @@ data class SlashCommand(
      * это не управление, а экзамен.
      */
     val args: List<String> = emptyList(),
+    /**
+     * Команда уносит работу и назад её не вернуть.
+     *
+     * В списке такие соседствуют с безобидными, а промах на телефоне стоит
+     * одного касания мимо — поэтому спрашиваем подтверждение. Прерывание или
+     * сжатие контекста сюда не относятся: они обратимы.
+     */
+    val danger: Boolean = false,
 ) {
     val needsArg: Boolean get() = args.isNotEmpty()
+
+    /** По чему ищем в палитре: и по имени, и по описанию — как кто помнит. */
+    fun matches(query: String): Boolean {
+        val q = query.trim().removePrefix("/").lowercase()
+        if (q.isEmpty()) return true
+        return cmd.contains(q, true) || title.contains(q, true) || hint.contains(q, true)
+    }
 }
 
 object Slash {
@@ -33,11 +48,20 @@ object Slash {
         SlashCommand("/effort", "Усилие", "сколько думать", args = listOf("low", "medium", "high", "xhigh", "max")),
         SlashCommand("/compact", "Сжать контекст", "освободить место, сохранив суть"),
         SlashCommand("/context", "Контекст", "чем занято окно"),
+        // Откат — то, ради чего с телефона лезут в панике: агент пошёл не туда,
+        // а прерывание останавливает работу, но не отменяет сделанного. Сам по
+        // себе безопасен: рисует список точек и ждёт выбора.
+        SlashCommand("/rewind", "Откатить", "вернуться к точке до правок"),
+        SlashCommand("/usage", "Лимиты", "сколько осталось в окне и за неделю"),
         SlashCommand("/cost", "Расход", "токены и стоимость сессии"),
+        SlashCommand("/bashes", "Фоновые команды", "что ещё выполняется"),
+        SlashCommand("/agents", "Субагенты", "какие настроены"),
+        SlashCommand("/permissions", "Разрешения", "что агенту позволено без вопросов"),
         SlashCommand("/status", "Состояние", "версия, модель, аккаунт"),
+        SlashCommand("/help", "Справка", "весь список команд самого агента"),
         // /clear последним и с предупреждением: он выбрасывает разговор, и
         // соседство с безобидным /compact в списке — приглашение промахнуться
-        SlashCommand("/clear", "Очистить", "выбросит разговор — назад не вернуть"),
+        SlashCommand("/clear", "Очистить", "выбросит разговор — назад не вернуть", danger = true),
     )
 
     private val CODEX = listOf(
@@ -45,7 +69,7 @@ object Slash {
             args = listOf("gpt-5.5", "gpt-5-codex", "gpt-5")),
         SlashCommand("/compact", "Сжать контекст"),
         SlashCommand("/status", "Состояние"),
-        SlashCommand("/clear", "Очистить", "выбросит разговор — назад не вернуть"),
+        SlashCommand("/clear", "Очистить", "выбросит разговор — назад не вернуть", danger = true),
     )
 
     fun forAgent(agent: String): List<SlashCommand> = if (agent == "codex") CODEX else CLAUDE

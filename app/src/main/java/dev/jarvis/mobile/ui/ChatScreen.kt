@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -32,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -405,59 +408,136 @@ private fun InputBar(
  * несуществующая обернётся мусором в диалоге. Всё, чего тут нет, дописывается
  * руками в поле ввода — оно понимает косую черту так же.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun SlashPalette(agent: String, onDismiss: () -> Unit, onPick: (SlashCommand) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    // Необратимое подтверждаем: в списке оно соседствует с безобидным, а промах
+    // на телефоне стоит одного касания мимо.
+    var confirming by remember { mutableStateOf<SlashCommand?>(null) }
+    // Значение, которого нет в готовых: команды принимают и произвольное, а
+    // палитра из одних кнопок делала вид, что выбор ограничен.
+    var typing by remember { mutableStateOf<SlashCommand?>(null) }
+
+    confirming?.let { command ->
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            title = { Text(command.title) },
+            text = { Text(command.hint) },
+            confirmButton = {
+                TextButton(onClick = { confirming = null; onPick(command) }) { Text("Всё равно") }
+            },
+            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Отмена") } },
+        )
+    }
+
+    typing?.let { command ->
+        var value by remember(command.cmd) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { typing = null },
+            title = { Text(command.title) },
+            text = {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    label = { Text(command.cmd) },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = value.isNotBlank(),
+                    onClick = {
+                        typing = null
+                        onPick(command.copy(args = listOf(value.trim())))
+                    },
+                ) { Text("Отправить") }
+            },
+            dismissButton = { TextButton(onClick = { typing = null }) { Text("Отмена") } },
+        )
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
+        val all = Slash.forAgent(agent)
+        val shown = all.filter { it.matches(query) }
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
                 .padding(horizontal = PagePad)
                 .padding(bottom = 28.dp)
         ) {
             SectionTitle("Команды · $agent")
             Spacer(Modifier.height(8.dp))
-            Slash.forAgent(agent).forEach { command ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onPick(command) }
-                        .padding(vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(command.title, style = MaterialTheme.typography.titleSmall)
-                        if (command.hint.isNotBlank()) {
-                            Text(
-                                command.hint,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        command.cmd,
-                        style = MonoSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                // Аргументы — кнопками, а не подсказкой в тексте: набирать
-                // «sonnet» на телефоне, помня написание, это не управление.
-                if (command.needsArg) {
+            // Поиск появляется, когда список перестал помещаться в память: на
+            // семи строках он был бы лишним стуком по клавиатуре.
+            if (all.size > 8) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Найти команду") },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            if (shown.isEmpty()) {
+                Text(
+                    "Ничего не нашлось. Любую другую команду можно набрать прямо " +
+                        "в поле ввода — оно понимает косую черту так же.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                shown.forEach { command ->
                     Row(
-                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (command.danger) confirming = command else onPick(command)
+                            }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        command.args.forEach { arg ->
-                            OutlinedButton(onClick = { onPick(command.copy(args = listOf(arg))) }) {
-                                Text(arg, style = MaterialTheme.typography.labelLarge)
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                command.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (command.danger) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurface,
+                            )
+                            if (command.hint.isNotBlank()) {
+                                Text(
+                                    command.hint,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            command.cmd,
+                            style = MonoSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
+                    // Аргументы — кнопками, а не подсказкой в тексте: набирать
+                    // «sonnet» на телефоне, помня написание, это не управление.
+                    if (command.needsArg) {
+                        FlowRow(
+                            Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            command.args.forEach { arg ->
+                                OutlinedButton(onClick = { onPick(command.copy(args = listOf(arg))) }) {
+                                    Text(arg, style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                            TextButton(onClick = { typing = command }) { Text("своё…") }
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
     }
