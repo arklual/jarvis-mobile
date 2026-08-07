@@ -17,7 +17,7 @@ import dev.jarvis.mobile.model.Picker
 import dev.jarvis.mobile.model.PickerReader
 import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
-import dev.jarvis.mobile.model.Status
+import dev.jarvis.mobile.model.tally
 import dev.jarvis.mobile.model.Vitals
 import dev.jarvis.mobile.model.VitalsReader
 import dev.jarvis.mobile.model.Worker
@@ -118,12 +118,16 @@ data class Probe(
     val waiting: Int = 0,
     val working: Int = 0,
     val done: Int = 0,
+    /** Всего сессий: без него «ничего не происходит» неотличимо от «пусто». */
+    val total: Int = 0,
     /** Не дозвонились: причина короткой строкой, чинить-то всё равно человеку. */
     val error: String? = null,
     val at: Long = 0,
 ) {
     val answered: Boolean get() = error == null && at > 0
-    val quiet: Boolean get() = answered && waiting == 0 && working == 0 && done == 0
+    val busy: Boolean get() = waiting > 0 || working > 0 || done > 0
+    /** Совсем ничего: ни одной сессии. Не то же самое, что «все спят». */
+    val quiet: Boolean get() = answered && !busy && total == 0
 }
 
 data class PaneView(
@@ -186,6 +190,15 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private var poller: Job? = null
     /** Обход машин для сводки: он длинный, и уходя с экрана его гасят. */
     private var probeJob: Job? = null
+    /**
+     * Туннель текущей проверки.
+     *
+     * Отмена корутины не прерывает блокирующий ввод-вывод: SSH-рукопожатие и
+     * чтение доработали бы до таймаута — до полуминуты живой связи после того,
+     * как человек ушёл с экрана. Закрытие туннеля выбивает их сразу.
+     */
+    @Volatile
+    private var inflight: SshTunnel? = null
     /** Дочитывание открытого чата: живёт ровно пока чат на экране. */
     private var chatTail: Job? = null
     /**
@@ -277,7 +290,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
         secrets.machinesRaw = Machines.encode(next)
         if (secret != null) secrets.setSecret(machine.id, secret)
         if (passphrase != null) secrets.setPassphrase(machine.id, passphrase)
-        _state.value = _state.value.copy(machines = next.items)
+        // Сводку удалённой машины уносим с собой: иначе она продолжает
+        // считаться в занятости и может блокировать кнопку обхода.
+        _state.update { it.copy(machines = next.items, probes = it.probes - id) }
     }
 
     fun removeMachine(id: String) {
@@ -436,6 +451,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
         // Вернулись в открытый чат — дочитывание надо поднять заново. Лента при
         // этом не перечитывается: накопитель пережил паузу.
         resumeTail()
+        // На списке машин сводка за час в кармане устарела вся. Композиция
+        // уход в фон переживает, поэтому сама она не обновится.
+        if (_state.value.screen is Screen.Machines) checkAll()
         val id = currentMachineId() ?: return
         if (_state.value.link.online) return
         val machine = _state.value.machines.firstOrNull { it.id == id } ?: return
@@ -490,52 +508,67 @@ class AppState(app: Application) : AndroidViewModel(app) {
      *
      * По очереди, а не разом: каждая проверка — это SSH-рукопожатие, и три
      * одновременных на телефоне означают три радиосеанса и заметный разряд ради
-     * экрана, на который смотрят пару секунд. Открытая связь не трогается —
-     * машину, к которой уже подключены, читаем из её же реестра.
+     * экрана, на который смотрят пару секунд.
      */
     fun checkAll() {
         probeJob?.cancel()
         probeJob = viewModelScope.launch {
             for (machine in _state.value.machines) {
-                if (currentMachineId() == machine.id && _state.value.link.online) {
-                    setProbe(machine.id, count(registry.values))
-                    continue
-                }
                 setProbe(machine.id, Probe(checking = true))
-                val probe = withContext(Dispatchers.IO) { probe(machine) }
-                setProbe(machine.id, probe)
+                val result = withContext(Dispatchers.IO) { probe(machine) }
+                setProbe(machine.id, result)
+            }
+        }
+        // Отменённый обход оставлял бы карточки в «смотрю…» навсегда, а кнопка
+        // считает по ним занятость — то есть одно нажатие на машину посреди
+        // обхода выключало её насмерть.
+        probeJob?.invokeOnCompletion {
+            inflight?.let { t -> runCatching { t.close() } }
+            inflight = null
+            _state.update { st ->
+                st.copy(probes = st.probes.mapValues { (_, p) -> if (p.checking) Probe() else p })
             }
         }
     }
 
     private fun probe(machine: Machine): Probe {
+        val now = System.currentTimeMillis()
         var t: SshTunnel? = null
         return try {
-            val tunnel = tunnelFor(machine).also { t = it }
-            val local = tunnel.open()
-            val c = NodeClient("http://127.0.0.1:$local")
-            // Ждать нечего: если на машине что-то происходило, события уже лежат
-            // в кольце узла и приедут сразу.
-            val page = c.events(0, wait = false)
-            count(Reducer.apply(emptyMap(), page.events).values)
-        } catch (cancel: CancellationException) {
-            throw cancel
+            val tunnel = tunnelFor(machine).also { t = it; inflight = it }
+            val c = NodeClient("http://127.0.0.1:${tunnel.open()}")
+            // Сначала рукопожатие: оно отделяет «узел жив» от «не дозвонились».
+            // Без этого молчание сети выдавалось бы за тишину на машине.
+            val hello = c.hello()
+            // Кольцо пустое — на машине не случалось вообще ничего. Спрашивать
+            // события бессмысленно: узел прождал бы весь long-poll впустую.
+            if (hello.buffered == 0L) return Probe(at = now)
+            // Просим ровно то, что у узла ещё есть. `since = 0` здесь врал:
+            // кольцо держит две тысячи событий, и на машине, где реально
+            // работали, ответом всегда был `gap` с пустым списком — то есть
+            // бодрое «тихо» вместо настоящей картины.
+            val since = (hello.cursor - hello.buffered).coerceAtLeast(0)
+            val page = c.events(since)
+            if (page.gap) return Probe(error = "узел потерял начало ленты", at = now)
+            val sessions = Reducer.apply(emptyMap(), page.events).values
+            val tally = sessions.tally()
+            Probe(
+                waiting = tally.waiting,
+                working = tally.working,
+                done = tally.done,
+                total = sessions.size,
+                at = now,
+            )
         } catch (e: Exception) {
-            // Молчание узла на пустом кольце — это «тихо», а не поломка: сессий
-            // на машине попросту нет, и говорить человеку про ошибку нечестно.
-            if (e is java.net.SocketTimeoutException) Probe(at = System.currentTimeMillis())
-            else Probe(error = human(e), at = System.currentTimeMillis())
+            // Первая строка: на карточке всё равно две строки, а инструкция
+            // про JARVIS_NODE_TCP оборвалась бы на полуслове. Целиком её
+            // человек увидит, когда зайдёт на машину.
+            Probe(error = human(e, t).lineSequence().first(), at = now)
         } finally {
             runCatching { t?.close() }
+            if (inflight === t) inflight = null
         }
     }
-
-    private fun count(sessions: Collection<Session>): Probe = Probe(
-        waiting = sessions.count { it.status == Status.WAITING || it.question != null },
-        working = sessions.count { it.status == Status.WORKING },
-        done = sessions.count { it.status == Status.DONE },
-        at = System.currentTimeMillis(),
-    )
 
     private fun setProbe(id: String, probe: Probe) {
         _state.update { it.copy(probes = it.probes + (id to probe)) }
@@ -1014,9 +1047,11 @@ class AppState(app: Application) : AndroidViewModel(app) {
      * не слушает — sshd отказал в канале, и sshj закрыл локальный сокет.
      * Отличить это по тексту самому невозможно, поэтому объясняем.
      */
-    private fun human(e: Throwable): String {
+    private fun human(e: Throwable, over: SshTunnel? = null): String {
         val raw = e.message.orEmpty()
-        val why = tunnel?.forwardError?.takeIf { it.isNotBlank() }
+        // Туннель передаётся явно: у обхода машин он свой, а поле класса в этот
+        // момент либо пусто, либо принадлежит совсем другой машине.
+        val why = (over ?: tunnel)?.forwardError?.takeIf { it.isNotBlank() }
         val notListening = "Туннель есть, но порт узла на той машине никто не слушает.\n" +
             "Проверь там: systemctl --user show jarvis-node -p Environment — нужен " +
             "JARVIS_NODE_TCP=127.0.0.1:<порт>, и узел должен быть свежий."

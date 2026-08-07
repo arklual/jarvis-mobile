@@ -46,9 +46,18 @@ fun MachinesScreen(state: UiState, app: AppState) {
     val checking = state.probes.values.any { it.checking }
     // Сводка стареет: пока телефон лежал в кармане, всё могло измениться. Но и
     // ломиться по SSH на каждый показ экрана незачем — только если давно.
-    LaunchedEffect(state.machines.size) {
-        val fresh = state.probes.values.any { System.currentTimeMillis() - it.at < PROBE_FRESH_MS }
-        if (state.machines.isNotEmpty() && !fresh) app.checkAll()
+    //
+    // Условие — «есть машина БЕЗ свежей сводки», а не «есть хоть одна свежая»:
+    // иначе только что добавленная машина так и осталась бы непроверенной, а
+    // оборванный обход никогда не добрал бы хвост списка.
+    val stale = state.machines.any { m ->
+        val at = state.probes[m.id]?.at ?: 0
+        System.currentTimeMillis() - at >= PROBE_FRESH_MS
+    }
+    // Ключ — состав списка: по одной лишь длине правка адреса машины проходит
+    // незамеченной, и карточка продолжает показывать сводку со старого адреса.
+    LaunchedEffect(state.machines.map { it.id to it.host }) {
+        if (stale) app.checkAll()
     }
 
     val target = editing
@@ -157,6 +166,9 @@ private fun ProbeLine(probe: Probe?) {
         probe.checking -> "смотрю…" to scheme.onSurfaceVariant
         probe.error != null -> probe.error to scheme.error
         probe.quiet -> "тихо" to scheme.onSurfaceVariant
+        // Сессии есть, но все спят. Сказать «тихо» было бы правдой лишь
+        // наполовину: человек решил бы, что на машине пусто.
+        !probe.busy -> "${probe.total} ${plural(probe.total)}, ничего не происходит" to scheme.onSurfaceVariant
         else -> buildList {
             if (probe.waiting > 0) add("${probe.waiting} ждёт ответа")
             if (probe.working > 0) add("${probe.working} в работе")
@@ -173,7 +185,6 @@ private fun ProbeLine(probe: Probe?) {
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
     )
-    Spacer(Modifier.height(2.dp))
 }
 
 @Composable
@@ -275,3 +286,9 @@ private fun Field(
 
 /** Насколько сводка считается свежей: минута — цена SSH-рукопожатия к каждой. */
 private const val PROBE_FRESH_MS = 60_000L
+
+private fun plural(n: Int): String = when {
+    n % 10 == 1 && n % 100 != 11 -> "сессия"
+    n % 10 in 2..4 && n % 100 !in 12..14 -> "сессии"
+    else -> "сессий"
+}

@@ -74,6 +74,11 @@ class SshTunnel(
         // провайдера после уже поздно.
         Crypto.install()
         val ssh = SSHClient()
+        // Запоминаем СРАЗУ: если упадёт рукопожатие или аутентификация, поле
+        // осталось бы пустым, close() закрывать было бы нечего, а SSHClient к
+        // этому моменту уже держит сокет и поток чтения. При обходе машин
+        // неверный пароль означал бы утечку на каждом круге.
+        client = ssh
         ssh.addHostKeyVerifier(verifier())
         ssh.connectTimeout = 15_000
         ssh.timeout = 20_000
@@ -82,12 +87,11 @@ class SshTunnel(
             is Auth.Password -> ssh.authPassword(user, auth.password)
             is Auth.PrivateKey -> ssh.authPublickey(user, keyProvider(ssh, auth))
         }
-        client = ssh
 
         val socket = ServerSocket()
+        server = socket // по той же причине — до bind, а не после
         socket.reuseAddress = true
         socket.bind(InetSocketAddress("127.0.0.1", 0)) // порт выбирает система
-        server = socket
         localPort = socket.localPort
 
         val params = Parameters("127.0.0.1", localPort, "127.0.0.1", remotePort)

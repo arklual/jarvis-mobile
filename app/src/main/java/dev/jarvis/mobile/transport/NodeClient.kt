@@ -48,16 +48,8 @@ class NodeClient(private val baseUrl: String) {
 
     fun hello(): Hello = json.decodeFromString(get("/hello"))
 
-    /**
-     * События с курсора. Узел держит запрос до 25 с, если новых нет.
-     *
-     * `wait = false` — для беглого опроса: у машины, где ничего не происходит,
-     * ждать нечего, и держать ради этого соединение полминуты незачем. Узел про
-     * это ничего не знает и знать не должен: разница только в том, какой клиент
-     * первым потеряет терпение.
-     */
-    fun events(since: Long, wait: Boolean = true): EventsPage =
-        json.decodeFromString(get("/events?since=$since", longPoll = wait))
+    /** События с курсора. Узел держит запрос до 25 с, если новых нет. */
+    fun events(since: Long): EventsPage = json.decodeFromString(get("/events?since=$since", longPoll = true))
 
     /** Кусок транскрипта. `null` — файла ещё нет: сессия не слала событий. */
     fun file(path: String, from: Long): FileChunk? {

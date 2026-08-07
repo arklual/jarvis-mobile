@@ -132,3 +132,29 @@ fun Collection<Session>.sortedForList(): List<Session> = sortedWith(
 
 /** Заглушка на случай, если конверт не принёс ничего именуемого. */
 fun Session.title(): String = project ?: cwd ?: id.take(8)
+
+/** Во что складывается список сессий: сколько ждёт, сколько работает, сколько кончило. */
+data class Tally(val waiting: Int = 0, val working: Int = 0, val done: Int = 0) {
+    val any: Boolean get() = waiting > 0 || working > 0 || done > 0
+}
+
+/**
+ * Свести сессии к трём числам.
+ *
+ * Категория у сессии РОВНО одна. Считать их независимыми условиями нельзя:
+ * вопрос снимается только ответом через приложение, а если человек ответил в
+ * терминале на самой машине, `question` останется висеть — и сессия попала бы
+ * разом и в «ждёт», и в «в работе». Человек пошёл бы искать вопрос, которого
+ * уже нет.
+ */
+fun Collection<Session>.tally(): Tally {
+    var waiting = 0
+    var working = 0
+    var done = 0
+    for (s in this) when {
+        s.status == Status.WAITING || s.question != null -> waiting++
+        s.status == Status.WORKING -> working++
+        s.status == Status.DONE -> done++
+    }
+    return Tally(waiting, working, done)
+}
