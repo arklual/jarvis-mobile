@@ -19,6 +19,7 @@ import dev.jarvis.mobile.model.Status
 import dev.jarvis.mobile.model.title
 import dev.jarvis.mobile.transport.MapKnownHosts
 import dev.jarvis.mobile.transport.NodeClient
+import dev.jarvis.mobile.transport.replayFrom
 import dev.jarvis.mobile.transport.SshTunnel
 import dev.jarvis.mobile.transport.backoffSeconds
 import dev.jarvis.mobile.transport.isTransient
@@ -125,7 +126,12 @@ class WatchService : Service() {
             // Реестр нужен ради паны: без него отвечать некуда. Просим НЕДАВНЮЮ
             // историю, а не «с текущего места»: с текущего лента пуста, и
             // запрос просто провисел бы весь long-poll впустую.
-            val from = (client.hello().cursor - RECENT_EVENTS).coerceAtLeast(0)
+            // ...но и не больше, чем узел ещё помнит: с маленьким кольцом
+            // (JARVIS_NODE_BUFFER) запрос «пятьсот назад» упирается в
+            // вытесненное начало, и узел отвечает `gap` с пустым списком —
+            // отвечать на уведомление стало бы некуда.
+            val hello = client.hello()
+            val from = maxOf(hello.replayFrom(), (hello.cursor - RECENT_EVENTS).coerceAtLeast(0))
             known = Reducer.apply(emptyMap(), client.events(from).events)
         }
     }
