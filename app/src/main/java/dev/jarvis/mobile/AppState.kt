@@ -17,6 +17,7 @@ import dev.jarvis.mobile.model.Picker
 import dev.jarvis.mobile.model.PickerReader
 import dev.jarvis.mobile.model.Reducer
 import dev.jarvis.mobile.model.Session
+import dev.jarvis.mobile.model.dropDeadPanes
 import dev.jarvis.mobile.model.tally
 import dev.jarvis.mobile.model.Vitals
 import dev.jarvis.mobile.model.VitalsReader
@@ -31,6 +32,7 @@ import dev.jarvis.mobile.transport.isTransient
 import dev.jarvis.mobile.transport.MapKnownHosts
 import dev.jarvis.mobile.model.Launch
 import dev.jarvis.mobile.transport.NodeClient
+import dev.jarvis.mobile.transport.replayFrom
 import dev.jarvis.mobile.transport.RemoteProject
 import dev.jarvis.mobile.transport.SshTunnel
 import kotlinx.coroutines.CancellationException
@@ -218,6 +220,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
     /** Приложение на переднем плане: только тогда чат имеет право дочитываться. */
     private var foreground = true
     private var cursor: Long = 0
+    /** Реестр уже собран из буфера узла — дальше слушаем только новое. */
+    private var primed = false
     private var registry: Map<String, Session> = emptyMap()
     /** Причина последнего обрыва — её показывает состояние «переподключаюсь». */
     private var lastWhy: String = ""
@@ -328,6 +332,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
         probeJob = null
         disconnect()
         cursor = 0 // другая машина — другая лента
+        primed = false
         registry = emptyMap()
         _state.value = _state.value.copy(
             screen = Screen.Sessions(machineId),
@@ -387,6 +392,17 @@ class AppState(app: Application) : AndroidViewModel(app) {
     private suspend fun pollUntilBroken(): String? {
         while (true) {
             val c = client ?: return "связь закрыта"
+            // Реестра ещё нет (открыли машину) — собираем его из того, что узел
+            // помнит, и только потом слушаем новое.
+            if (!primed) {
+                try {
+                    replay(c)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (e: Exception) {
+                    return human(e)
+                }
+            }
             val page = try {
                 withContext(Dispatchers.IO) { c.events(cursor) }
             } catch (cancel: CancellationException) {
@@ -395,9 +411,18 @@ class AppState(app: Application) : AndroidViewModel(app) {
                 return human(e)
             }
             if (page.gap) {
-                // Узел честно сказал, что часть событий вытеснена. Реестр
-                // пересобираем с нуля: дырявая картина хуже пустой.
-                registry = emptyMap()
+                // Узел честно сказал, что часть событий вытеснена. Раньше здесь
+                // реестр обнулялся — и человек оставался без списка до первого
+                // нового события. Вместо этого перечитываем доступный отрезок:
+                // дырявая картина хуже полной, но пустая хуже дырявой.
+                try {
+                    replay(c)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (e: Exception) {
+                    return human(e)
+                }
+                continue
             }
             if (page.events.isNotEmpty()) {
                 registry = Reducer.apply(registry, page.events)
@@ -418,6 +443,50 @@ class AppState(app: Application) : AndroidViewModel(app) {
             cursor = page.cursor
             if (page.events.isEmpty()) delay(POLL_FLOOR_MS)
         }
+    }
+
+    /**
+     * Собрать реестр из того, что узел ещё помнит, и встать на его курсор.
+     *
+     * Главная причина, по которой список сессий бывал неполным: опрос начинался
+     * с `since = 0`, а кольцо узла хранит две тысячи событий. На машине, где
+     * работали хоть сколько-нибудь, узел на такой запрос отвечает `gap` с
+     * пустым списком — то есть «сессий нет». Дальше список наполнялся только
+     * тем, что случалось при открытом приложении, и сессия, которая молча ждёт
+     * ответа, не появлялась вообще никогда. Ровно за этим в телефон и лезут.
+     *
+     * Пустое кольцо не спрашиваем: `events` там ушёл бы в долгий опрос на
+     * двадцать пять секунд, и список пустовал бы всё это время.
+     */
+    private suspend fun replay(c: NodeClient) {
+        val hello = withContext(Dispatchers.IO) { c.hello() }
+        primed = true
+        if (hello.buffered == 0L) {
+            cursor = hello.cursor
+            return
+        }
+        val page = withContext(Dispatchers.IO) { c.events(hello.replayFrom()) }
+        // Поверх известного, а не вместо: то, что успело вытесниться из кольца,
+        // всё ещё может быть живым — за этим и сверка с панами ниже.
+        registry = Reducer.apply(registry, page.events)
+        cursor = page.cursor
+        reconcile(c)
+        _state.update { it.copy(sessions = registry.values.sortedForList(), error = null) }
+        resumeTail()
+    }
+
+    /**
+     * Вычеркнуть сессии, чьей паны на машине больше нет.
+     *
+     * Нужно ровно из-за предыдущего абзаца: раз мы держим сессии, о которых
+     * узел уже не помнит событий, кто-то должен решать, живы ли они. Пана —
+     * единственный честный признак, который узел отдаёт наружу. Сессию без паны
+     * (запущена вне tmux) не трогаем: судить не по чему.
+     */
+    private suspend fun reconcile(c: NodeClient) {
+        val panes = withContext(Dispatchers.IO) { runCatching { c.panes() }.getOrNull() } ?: return
+        if (panes.error.isNotEmpty()) return // tmux не поднят — судить не по чему
+        registry = registry.dropDeadPanes(panes.panes.map { it.pane }.toSet())
     }
 
     private fun setLink(link: Link) {
@@ -559,12 +628,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
             // Кольцо пустое — на машине не случалось вообще ничего. Спрашивать
             // события бессмысленно: узел прождал бы весь long-poll впустую.
             if (hello.buffered == 0L) return Probe(at = now)
-            // Просим ровно то, что у узла ещё есть. `since = 0` здесь врал:
-            // кольцо держит две тысячи событий, и на машине, где реально
-            // работали, ответом всегда был `gap` с пустым списком — то есть
-            // бодрое «тихо» вместо настоящей картины.
-            val since = (hello.cursor - hello.buffered).coerceAtLeast(0)
-            val page = c.events(since)
+            // Просим ровно то, что у узла ещё есть (см. Hello.replayFrom).
+            val page = c.events(hello.replayFrom())
             if (page.gap) return Probe(error = "узел потерял начало ленты", at = now)
             val sessions = Reducer.apply(emptyMap(), page.events).values
             val tally = sessions.tally()

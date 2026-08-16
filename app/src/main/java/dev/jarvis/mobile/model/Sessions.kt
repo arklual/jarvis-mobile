@@ -202,6 +202,22 @@ fun Collection<Session>.sortedForList(): List<Session> = sortedWith(
         .thenByDescending { it.updatedAt }
 )
 
+/**
+ * Выбросить сессии, чьей паны на машине уже нет.
+ *
+ * Нужно тем, кто держит сессии, о которых узел больше не помнит событий:
+ * кольцо у него не бесконечное, а сессия, которая молча ждёт ответа, из него
+ * вытесняется и при этом жива. Держать такую в списке правильно, но кто-то
+ * должен вычёркивать закончившиеся — пана и есть этот признак.
+ *
+ * Сессию без паны не трогаем: запущена вне tmux, судить не по чему. И пустой
+ * список пан ничего не вычёркивает — это «tmux не поднят», а не «всё умерло».
+ */
+fun Map<String, Session>.dropDeadPanes(live: Set<String>): Map<String, Session> {
+    if (live.isEmpty()) return this
+    return filterValues { s -> s.pane == null || s.pane in live }
+}
+
 /** Заглушка на случай, если конверт не принёс ничего именуемого. */
 fun Session.title(): String = project ?: cwd ?: id.take(8)
 
