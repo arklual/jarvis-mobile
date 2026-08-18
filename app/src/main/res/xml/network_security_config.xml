@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Политика сети: открытым текстом — только в петлю.
+
+  Начиная с Android 9 (targetSdk 28+) система запрещает HTTP без TLS ко ВСЕМ
+  адресам, включая 127.0.0.1. Приложение ходит к узлу именно так: SSH-туннель
+  поднимается внутри телефона, и локальный конец туннеля — обычный http на
+  127.0.0.1:<случайный порт>. Без этого исключения любой запрос падает с
+  «CLEARTEXT communication to 127.0.0.1 not permitted by network security
+  policy», то есть не работает вообще ничего.
+
+  Разрешение узкое, и это принципиально. `usesCleartextTraffic="true"` в
+  манифесте открыл бы открытый текст к ЛЮБОМУ хосту — для приложения, у
+  которого единственный транспорт наружу это твой SSH, такое умолчание было бы
+  ложью. Трафик, разрешённый здесь, телефон не покидает: наружу он уходит уже
+  внутри ssh-соединения, зашифрованным.
+-->
+<network-security-config>
+    <!-- Всё остальное — только TLS, как и по умолчанию. -->
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Локальный конец SSH-туннеля: SshTunnel слушает 127.0.0.1. -->
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
